@@ -1,0 +1,46 @@
+{
+    "name": "@imartisann/repo-int",
+    "version": "0.1.0",
+    "description": "Initialize a Bun repository with Oxc tooling, Husky, lint-staged, Dependabot, and branch protection.",
+    "license": "UNLICENSED",
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/ImArtisann/repo-int.git"
+    },
+    "bin": {
+        "repo-int": "./index.ts"
+    },
+    "files": [
+        "index.ts",
+        "src/cli.ts",
+        "src/configure.ts",
+        "src/github.ts",
+        "src/process.ts",
+        "templates"
+    ],
+    "type": "module",
+    "module": "index.ts",
+    "publishConfig": {
+        "access": "restricted",
+        "registry": "https://npm.pkg.github.com"
+    },
+    "scripts": {
+        "check": "bun run typecheck && bun run format:check && bun run lint && bun test",
+        "typecheck": "tsc --noEmit",
+        "format": "oxfmt --write .",
+        "format:check": "oxfmt --check .",
+        "lint": "oxlint . --no-error-on-unmatched-pattern",
+        "lint:fix": "oxlint --fix . --no-error-on-unmatched-pattern",
+        "prepare": "bunx --bun husky",
+        "test": "bun test",
+        "publish:package": "bun publish"
+    },
+    "devDependencies": {
+        "@types/bun": "latest",
+        "husky": "^9.1.7",
+        "lint-staged": "^17.3.0",
+        "oxfmt": "^0.62.0",
+        "oxlint": "^1.77.0",
+        "typescript": "^5.9.3"
+    }
+}
