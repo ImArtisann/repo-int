@@ -15,7 +15,7 @@ Configure it once in your user-level `~/.npmrc`:
 Then run the initializer from the repository root:
 
 ```bash
-bun x @imartisann/repo-int
+bunx --registry=https://npm.pkg.github.com @imartisann/repo-int --yes
 ```
 
 The command:
