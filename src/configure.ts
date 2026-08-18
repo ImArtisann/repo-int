@@ -1,5 +1,5 @@
 import { basename, dirname, resolve } from "node:path";
-import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 
 export interface Logger {
     error(message: string): void;
@@ -12,6 +12,7 @@ export type Confirm = (question: string) => Promise<boolean>;
 export interface ManagedTemplate {
     alternatives: readonly string[];
     destination: string;
+    createOnly?: boolean;
     executable?: boolean;
     source: string;
     tool: string;
@@ -22,6 +23,9 @@ export interface LoadedTemplate extends ManagedTemplate {
 }
 
 export type FileStatus = "created" | "unchanged" | "updated" | "skipped";
+export interface TemplateOptions {
+    effect?: boolean;
+}
 
 export const MANAGED_TEMPLATES: readonly ManagedTemplate[] = [
     {
@@ -34,7 +38,7 @@ export const MANAGED_TEMPLATES: readonly ManagedTemplate[] = [
         tool: "oxlint",
         destination: "oxlint.config.ts",
         alternatives: [".oxlintrc.json", ".oxlintrc.jsonc", "oxlint.config.mts"],
-        source: "oxlint.config.ts",
+        source: "oxlint.default.config.ts",
     },
     {
         tool: "lint-staged",
@@ -67,6 +71,13 @@ export const MANAGED_TEMPLATES: readonly ManagedTemplate[] = [
         source: "dependabot.yml",
     },
 ];
+const EFFECT_TSCONFIG_TEMPLATE: ManagedTemplate = {
+    tool: "Effect TypeScript",
+    destination: "tsconfig.json",
+    alternatives: [],
+    createOnly: true,
+    source: "tsconfig.effect.json",
+};
 
 const DESIRED_SCRIPTS: Readonly<Record<string, string>> = {
     format: "oxfmt --write .",
@@ -75,6 +86,7 @@ const DESIRED_SCRIPTS: Readonly<Record<string, string>> = {
     "lint:fix": "oxlint --fix . --no-error-on-unmatched-pattern",
     prepare: "bunx --bun husky",
 };
+const EFFECT_PATCH_SCRIPT = "effect-tsgo patch --typescript --oxlint";
 
 async function fileExists(path: string): Promise<boolean> {
     return Bun.file(path).exists();
@@ -86,14 +98,59 @@ async function writeManagedFile(path: string, content: string, executable: boole
     if (executable) await chmod(path, 0o755);
 }
 
-export async function loadTemplates(): Promise<LoadedTemplate[]> {
-    const templateRoot = resolve(import.meta.dir, "../templates");
-    return Promise.all(
-        MANAGED_TEMPLATES.map(async (template) => ({
-            ...template,
-            content: await readFile(resolve(templateRoot, template.source), "utf8"),
-        })),
+async function loadTemplateDirectory(
+    templateRoot: string,
+    directory: string,
+    tool: string,
+): Promise<LoadedTemplate[]> {
+    const entries = await readdir(resolve(templateRoot, directory), { withFileTypes: true });
+    const loaded = await Promise.all(
+        entries
+            .toSorted((left, right) => left.name.localeCompare(right.name))
+            .map(async (entry): Promise<LoadedTemplate[]> => {
+                const source = `${directory}/${entry.name}`;
+                if (entry.isDirectory()) {
+                    return loadTemplateDirectory(templateRoot, source, tool);
+                }
+                if (!entry.isFile()) return [];
+                return [
+                    {
+                        tool,
+                        destination: source,
+                        alternatives: [],
+                        source,
+                        content: await readFile(resolve(templateRoot, source), "utf8"),
+                    },
+                ];
+            }),
     );
+    return loaded.flat();
+}
+
+export async function loadTemplates(options: TemplateOptions = {}): Promise<LoadedTemplate[]> {
+    const templateRoot = resolve(import.meta.dir, "../templates");
+    const effect = options.effect === true;
+    const configuredTemplates = MANAGED_TEMPLATES.map((template) =>
+        effect && template.tool === "oxlint"
+            ? { ...template, source: "oxlint.effect.config.ts" }
+            : template,
+    );
+    const managedTemplates = effect
+        ? [...configuredTemplates, EFFECT_TSCONFIG_TEMPLATE]
+        : configuredTemplates;
+    const groups = await Promise.all([
+        Promise.all(
+            managedTemplates.map(async (template) => ({
+                ...template,
+                content: await readFile(resolve(templateRoot, template.source), "utf8"),
+            })),
+        ),
+        loadTemplateDirectory(templateRoot, "tools/oxlint/anti-slop", "anti-slop"),
+        ...(effect
+            ? [loadTemplateDirectory(templateRoot, "tools/oxlint/effect", "Effect Oxlint")]
+            : []),
+    ]);
+    return groups.flat();
 }
 
 export async function synchronizeManagedFile(
@@ -149,6 +206,10 @@ export async function synchronizeManagedFile(
         logger.log(`[created] ${template.destination}`);
         return "created";
     }
+    if (template.createOnly) {
+        logger.log(`[unchanged] ${template.destination}`);
+        return "unchanged";
+    }
 
     const existing = await readFile(destination, "utf8");
     if (existing === template.content) {
@@ -200,6 +261,7 @@ export async function configurePackageJson(
     desiredLintStaged: unknown,
     confirm: Confirm,
     logger: Logger,
+    options: TemplateOptions = {},
 ): Promise<{ manageLintStagedFile: boolean }> {
     const path = resolve(cwd, "package.json");
     const exists = await fileExists(path);
@@ -261,25 +323,38 @@ export async function configurePackageJson(
         changed = true;
     }
 
-    for (const [name, desired] of Object.entries(DESIRED_SCRIPTS)) {
+    const effect = options.effect === true;
+    const desiredScripts = {
+        ...DESIRED_SCRIPTS,
+        ...(effect ? { prepare: `${DESIRED_SCRIPTS.prepare} && ${EFFECT_PATCH_SCRIPT}` } : {}),
+    };
+    for (const [name, desired] of Object.entries(desiredScripts)) {
         const existing = scripts[name];
         if (existing === undefined) {
             scripts[name] = desired;
             changed = true;
             continue;
         }
+        const hasHusky =
+            name === "prepare" &&
+            typeof existing === "string" &&
+            /(^|\s|&&)husky($|\s|&&)/.test(existing);
+        const hasEffectPatch =
+            typeof existing === "string" && existing.includes(EFFECT_PATCH_SCRIPT);
         if (
             existing === desired ||
-            (name === "prepare" &&
-                typeof existing === "string" &&
-                /(^|\s|&&)husky($|\s|&&)/.test(existing))
+            (name === "prepare" && hasHusky && (!effect || hasEffectPatch))
         ) {
             continue;
         }
 
         const proposed =
             name === "prepare" && typeof existing === "string"
-                ? `${existing} && ${desired}`
+                ? [
+                      existing,
+                      ...(!hasHusky ? [DESIRED_SCRIPTS.prepare] : []),
+                      ...(effect && !hasEffectPatch ? [EFFECT_PATCH_SCRIPT] : []),
+                  ].join(" && ")
                 : desired;
         const accepted = await confirm(
             `package.json script "${name}" differs from repo-int. Change it from ${JSON.stringify(existing)} to ${JSON.stringify(proposed)}?`,

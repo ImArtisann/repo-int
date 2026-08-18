@@ -21,12 +21,13 @@ bunx --registry=https://npm.pkg.github.com @imartisann/repo-int --yes
 The command:
 
 - initializes Git with `main` when the directory is not already in a worktree;
-- installs `oxfmt`, `oxlint`, `husky`, and `lint-staged` as Bun development
-  dependencies;
+- installs native TypeScript-Go 7.0.2, the matching Oxlint type-aware backend,
+  `oxfmt`, `oxlint`, `husky`, and `lint-staged` as Bun development dependencies;
+- installs the local anti-slop Oxlint plugin under `tools/oxlint/anti-slop/` and
+  enables every anti-slop rule;
 - merges the formatter, linter, and Husky scripts into `package.json`;
-- copies the `oxfmt.config.ts` and `oxlint.config.ts` defaults from
-  `projects/my-agents`;
-- creates the lint-staged, Husky, and `.github/dependabot.yml` configurations;
+- copies the managed formatter, linter, lint-staged, Husky, and Dependabot
+  configurations packaged with this initializer;
 - enables classic protection for an existing, unprotected remote `main` branch;
   and
 - leaves existing branch protections and active rulesets unchanged.
@@ -37,6 +38,15 @@ replacement. In non-interactive environments they are also preserved. Pass
 
 ```bash
 bun x @imartisann/repo-int --yes
+```
+
+Pass `--effect` to also install the compatible `@effect/tsgo` release, configure
+the Effect language-service plugin in `tsconfig.json`, enable the Effect tsgo
+recommended Oxlint preset, and install the Effect-focused local rules under
+`tools/oxlint/effect/`:
+
+```bash
+bun x @imartisann/repo-int --effect --yes
 ```
 
 Branch protection is skipped when `gh` is unavailable or unauthenticated, the

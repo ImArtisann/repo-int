@@ -1,11 +1,11 @@
 {
     "name": "@imartisann/repo-int",
-    "version": "0.1.0",
-    "description": "Initialize a Bun repository with Oxc tooling, Husky, lint-staged, Dependabot, and branch protection.",
+    "version": "0.1.1",
+    "description": "Initialize a Bun repository with TypeScript-Go 7, Oxc tooling, anti-slop rules, optional Effect tooling, Husky, Dependabot, and branch protection.",
     "license": "UNLICENSED",
     "repository": {
         "type": "git",
-        "url": "git+https://github.com/ImArtisann/repo-int.git"
+        "url": "git@github.com:ImArtisann/repo-int.git"
     },
     "bin": {
         "repo-int": "./index.ts"
@@ -36,11 +36,14 @@
         "publish:package": "bun publish"
     },
     "devDependencies": {
+        "@effect/tsgo": "0.36.4",
+        "@oxlint/plugins": "1.77.0",
         "@types/bun": "latest",
         "husky": "^9.1.7",
         "lint-staged": "^17.3.0",
         "oxfmt": "^0.62.0",
-        "oxlint": "^1.77.0",
-        "typescript": "^5.9.3"
+        "oxlint": "1.77.0",
+        "oxlint-tsgolint": "7.0.2001",
+        "typescript": "7.0.2"
     }
 }

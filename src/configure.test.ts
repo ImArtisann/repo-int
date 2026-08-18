@@ -61,6 +61,20 @@ describe("managed configuration files", () => {
         expect(status).toBe("updated");
         expect(await readFile(join(cwd, ".toolrc"), "utf8")).toBe(template.content);
     });
+    test("never overwrites a create-only configuration", async () => {
+        const cwd = await temporaryDirectory();
+        await writeFile(join(cwd, ".toolrc"), "custom\n");
+
+        const status = await synchronizeManagedFile(
+            cwd,
+            { ...template, createOnly: true },
+            async () => true,
+            logger,
+        );
+
+        expect(status).toBe("unchanged");
+        expect(await readFile(join(cwd, ".toolrc"), "utf8")).toBe("custom\n");
+    });
 
     test("removes an alternative config only after explicit replacement", async () => {
         const cwd = await temporaryDirectory();

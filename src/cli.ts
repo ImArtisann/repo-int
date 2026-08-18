@@ -9,7 +9,16 @@ import {
 import { initializeGitRepository, protectMainBranch } from "./github.ts";
 import { requireSuccess, runCommand, type CommandRunner } from "./process.ts";
 
-const TOOL_PACKAGES = ["oxfmt", "oxlint", "husky", "lint-staged"] as const;
+const TOOL_PACKAGES = [
+    "typescript@7.0.2",
+    "oxlint@1.77.0",
+    "oxlint-tsgolint@7.0.2001",
+    "@oxlint/plugins@1.77.0",
+    "oxfmt",
+    "husky",
+    "lint-staged",
+] as const;
+const EFFECT_TOOL_PACKAGES = ["@effect/tsgo@0.36.4"] as const;
 
 export interface CliOptions {
     args?: readonly string[];
@@ -22,16 +31,19 @@ export interface CliOptions {
 const HELP = `repo-int
 
 Usage:
-  bun x @imartisann/repo-int [--yes]
+  bun x @imartisann/repo-int [--effect] [--yes]
 
 Options:
-  -y, --yes  Replace every differing managed configuration without prompting
-  -h, --help Show this help
+      --effect  Add the Effect language service and Effect-focused Oxlint rules
+  -y, --yes     Replace every differing managed configuration without prompting
+  -h, --help    Show this help
 `;
 
 export async function runCli(options: CliOptions = {}): Promise<number> {
     const args = options.args ?? [];
-    const unknown = args.filter((arg) => !["--yes", "-y", "--help", "-h"].includes(arg));
+    const unknown = args.filter(
+        (arg) => !["--effect", "--yes", "-y", "--help", "-h"].includes(arg),
+    );
     const logger = options.logger ?? console;
     if (unknown.length > 0) {
         logger.error(`Unknown option: ${unknown.join(", ")}\n\n${HELP}`);
@@ -45,6 +57,7 @@ export async function runCli(options: CliOptions = {}): Promise<number> {
     const cwd = options.cwd ?? process.cwd();
     const runner = options.runner ?? runCommand;
     const assumeYes = args.includes("--yes") || args.includes("-y");
+    const effect = args.includes("--effect");
     const interactive = process.stdin.isTTY && process.stdout.isTTY;
     const readline =
         !options.confirm && interactive
@@ -70,7 +83,7 @@ export async function runCli(options: CliOptions = {}): Promise<number> {
         logger.log(`Initializing ${cwd}`);
         await initializeGitRepository(cwd, runner, logger);
 
-        const templates = await loadTemplates();
+        const templates = await loadTemplates({ effect });
         const lintStaged = templates.find(({ tool }) => tool === "lint-staged");
         if (!lintStaged) throw new Error("The packaged lint-staged template is missing.");
 
@@ -80,6 +93,7 @@ export async function runCli(options: CliOptions = {}): Promise<number> {
             desiredLintStaged,
             confirm,
             logger,
+            { effect },
         );
 
         for (const template of templates) {
@@ -87,10 +101,43 @@ export async function runCli(options: CliOptions = {}): Promise<number> {
             await synchronizeManagedFile(cwd, template, confirm, logger);
         }
 
-        const installCommand = [process.execPath, "add", "--dev", ...TOOL_PACKAGES] as const;
-        logger.log(`Installing ${TOOL_PACKAGES.join(", ")}...`);
+        const toolPackages = effect ? [...TOOL_PACKAGES, ...EFFECT_TOOL_PACKAGES] : TOOL_PACKAGES;
+        const installCommand = [process.execPath, "add", "--dev", ...toolPackages] as const;
+        logger.log(`Installing ${toolPackages.join(", ")}...`);
         const installed = await runner(installCommand, { cwd, stdio: "inherit" });
         requireSuccess(installCommand, installed);
+
+        if (effect) {
+            const setupCommand = [
+                process.execPath,
+                "x",
+                "--bun",
+                "effect-tsgo",
+                "setup",
+                "--project",
+                "tsconfig.json",
+                "--non-interactive",
+                "--accept-defaults",
+                "--apply",
+                "--typescript",
+                "--oxlint",
+            ] as const;
+            const setup = await runner(setupCommand, { cwd, stdio: "inherit" });
+            requireSuccess(setupCommand, setup);
+
+            const patchCommand = [
+                process.execPath,
+                "x",
+                "--bun",
+                "effect-tsgo",
+                "patch",
+                "--typescript",
+                "--oxlint",
+            ] as const;
+            const patched = await runner(patchCommand, { cwd, stdio: "inherit" });
+            requireSuccess(patchCommand, patched);
+            logger.log("[configured] Effect TypeScript and Oxlint integrations");
+        }
 
         const huskyCommand = [process.execPath, "x", "--bun", "husky"] as const;
         const husky = await runner(huskyCommand, { cwd, stdio: "inherit" });

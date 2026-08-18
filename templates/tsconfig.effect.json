@@ -1,0 +1,17 @@
+{
+    "$schema": "./node_modules/@effect/tsgo/schema.json",
+    "compilerOptions": {
+        "allowImportingTsExtensions": true,
+        "module": "Preserve",
+        "moduleResolution": "bundler",
+        "noEmit": true,
+        "skipLibCheck": true,
+        "strict": true,
+        "plugins": [
+            {
+                "name": "@effect/language-service",
+                "diagnostics": false
+            }
+        ]
+    }
+}
