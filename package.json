@@ -36,7 +36,7 @@
         "publish:package": "bun publish"
     },
     "devDependencies": {
-        "@effect/tsgo": "0.36.4",
+        "@effect/tsgo": "0.36.5",
         "@oxlint/plugins": "1.77.0",
         "@types/bun": "latest",
         "husky": "^9.1.7",
