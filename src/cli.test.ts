@@ -55,6 +55,7 @@ describe("CLI initialization profiles", () => {
 
         expect(status).toBe(0);
         expect(installCall(calls)).toContain("typescript@7.0.2");
+        expect(installCall(calls)).toContain("--ignore-scripts");
         expect(installCall(calls)).toContain("oxlint-tsgolint@7.0.2001");
         expect(installCall(calls)).toContain("@oxlint/plugins@1.77.0");
         expect(installCall(calls)).not.toContain("@effect/tsgo@0.36.4");
@@ -117,6 +118,13 @@ describe("CLI initialization profiles", () => {
             "--typescript",
             "--oxlint",
         ]);
+        expect(calls).toContainEqual([process.execPath, "install", "--ignore-scripts"]);
+        const setupIndex = calls.findIndex((command) => command.includes("setup"));
+        const reinstallIndex = calls.findIndex((command) => command[1] === "install");
+        const patchIndex = calls.findIndex((command) => command.includes("patch"));
+        expect(setupIndex).toBeGreaterThanOrEqual(0);
+        expect(reinstallIndex).toBeGreaterThan(setupIndex);
+        expect(patchIndex).toBeGreaterThan(reinstallIndex);
     });
 
     test("documents and accepts the effect option", async () => {

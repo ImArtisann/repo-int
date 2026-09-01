@@ -120,4 +120,41 @@ describe("package.json merging", () => {
 
         expect(result.manageLintStagedFile).toBeFalse();
     });
+
+    test("removes an incompatible Bun-init TypeScript peer dependency", async () => {
+        const cwd = await temporaryDirectory();
+        await writeFile(
+            join(cwd, "package.json"),
+            `${JSON.stringify(
+                {
+                    name: "existing",
+                    peerDependencies: { react: "^19", typescript: "^5" },
+                },
+                null,
+                2,
+            )}\n`,
+        );
+
+        await configurePackageJson(cwd, {}, async () => true, logger);
+        const packageJson = JSON.parse(await readFile(join(cwd, "package.json"), "utf8")) as {
+            peerDependencies: Record<string, string>;
+        };
+
+        expect(packageJson.peerDependencies).toEqual({ react: "^19" });
+    });
+
+    test("does not continue with a rejected incompatible TypeScript peer", async () => {
+        const cwd = await temporaryDirectory();
+        const original = `${JSON.stringify(
+            { name: "existing", peerDependencies: { typescript: "^5" } },
+            null,
+            2,
+        )}\n`;
+        await writeFile(join(cwd, "package.json"), original);
+
+        await expect(configurePackageJson(cwd, {}, async () => false, logger)).rejects.toThrow(
+            "Cannot install TypeScript 7.0.2",
+        );
+        expect(await readFile(join(cwd, "package.json"), "utf8")).toBe(original);
+    });
 });

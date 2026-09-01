@@ -1,22 +1,30 @@
 # @imartisann/repo-int
 
-Private Bun CLI for applying the repository defaults used by ImArtisann.
+Public Bun CLI for applying the repository defaults used by ImArtisann.
 
 ## Use
 
-GitHub Packages requires a classic personal access token with `read:packages`.
-Configure it once in your user-level `~/.npmrc`:
+Run the initializer as the first command in a new repository directory. You do
+not need to run `bun init` or `bun install` first:
+
+```bash
+mkdir my-repository
+cd my-repository
+bun x @imartisann/repo-int --yes
+```
+
+The package is published on the public npm registry, so installation does not
+require a GitHub token. If you previously mapped the `@imartisann` scope to
+GitHub Packages, remove these lines from your user-level `~/.npmrc`:
 
 ```ini
 @imartisann:registry=https://npm.pkg.github.com
-//npm.pkg.github.com/:_authToken=YOUR_GITHUB_TOKEN
+//npm.pkg.github.com/:_authToken=...
 ```
 
-Then run the initializer from the repository root:
-
-```bash
-bunx --registry=https://npm.pkg.github.com @imartisann/repo-int --yes
-```
+The same command can be run in a directory that already contains `bun init -y`
+output; repo-int migrates its TypeScript peer dependency before installing
+TypeScript-Go 7.
 
 The command:
 
@@ -25,7 +33,7 @@ The command:
   `oxfmt`, `oxlint`, `husky`, and `lint-staged` as Bun development dependencies;
 - installs the local anti-slop Oxlint plugin under `tools/oxlint/anti-slop/` and
   enables every anti-slop rule;
-- merges the formatter, linter, and Husky scripts into `package.json`;
+- creates and merges the formatter, linter, and Husky scripts in `package.json`;
 - copies the managed formatter, linter, lint-staged, Husky, and Dependabot
   configurations packaged with this initializer;
 - enables classic protection for an existing, unprotected remote `main` branch;
@@ -62,5 +70,6 @@ bun run check
 ```
 
 Publishing a GitHub release runs `.github/workflows/publish.yml`, verifies the
-package, and publishes its current `package.json` version to GitHub Packages
-with restricted access.
+package, and publishes it with public access to npm. The first npm publication
+can use an `NPM_TOKEN` repository secret; subsequent releases can use npm
+trusted publishing with this GitHub Actions workflow.

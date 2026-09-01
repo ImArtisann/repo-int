@@ -1,11 +1,11 @@
 {
     "name": "@imartisann/repo-int",
-    "version": "0.1.1",
+    "version": "0.2.0",
     "description": "Initialize a Bun repository with TypeScript-Go 7, Oxc tooling, anti-slop rules, optional Effect tooling, Husky, Dependabot, and branch protection.",
     "license": "UNLICENSED",
     "repository": {
         "type": "git",
-        "url": "git@github.com:ImArtisann/repo-int.git"
+        "url": "https://github.com/ImArtisann/repo-int.git"
     },
     "bin": {
         "repo-int": "./index.ts"
@@ -21,8 +21,8 @@
     "type": "module",
     "module": "index.ts",
     "publishConfig": {
-        "access": "restricted",
-        "registry": "https://npm.pkg.github.com"
+        "access": "public",
+        "registry": "https://registry.npmjs.org"
     },
     "scripts": {
         "check": "bun run typecheck && bun run format:check && bun run lint && bun test",

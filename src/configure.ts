@@ -87,6 +87,7 @@ const DESIRED_SCRIPTS: Readonly<Record<string, string>> = {
     prepare: "bunx --bun husky",
 };
 const EFFECT_PATCH_SCRIPT = "effect-tsgo patch --typescript --oxlint";
+export const TYPESCRIPT_VERSION = "7.0.2";
 
 async function fileExists(path: string): Promise<boolean> {
     return Bun.file(path).exists();
@@ -291,6 +292,40 @@ export async function configurePackageJson(
     }
 
     let changed = !exists;
+    const peerDependenciesValue = packageJson.peerDependencies;
+    if (
+        peerDependenciesValue !== undefined &&
+        (peerDependenciesValue === null ||
+            Array.isArray(peerDependenciesValue) ||
+            typeof peerDependenciesValue !== "object")
+    ) {
+        throw new Error(`${path} has a non-object "peerDependencies" field.`);
+    }
+    const peerDependencies = peerDependenciesValue as Record<string, unknown> | undefined;
+    if (peerDependencies !== undefined) {
+        const typescriptPeer = peerDependencies.typescript;
+        if (typescriptPeer !== undefined) {
+            if (typeof typescriptPeer !== "string") {
+                throw new Error(`${path} has a non-string TypeScript peer dependency.`);
+            }
+            if (!Bun.semver.satisfies(TYPESCRIPT_VERSION, typescriptPeer)) {
+                const accepted = await confirm(
+                    `package.json peer dependency "typescript" (${JSON.stringify(typescriptPeer)}) conflicts with repo-int's managed TypeScript ${TYPESCRIPT_VERSION}. Remove it?`,
+                );
+                if (!accepted) {
+                    throw new Error(
+                        `Cannot install TypeScript ${TYPESCRIPT_VERSION} while the incompatible peer dependency is kept.`,
+                    );
+                }
+                delete peerDependencies.typescript;
+                if (Object.keys(peerDependencies).length === 0) {
+                    delete packageJson.peerDependencies;
+                }
+                changed = true;
+            }
+        }
+    }
+
     let manageLintStagedFile = true;
     const embeddedLintStaged = packageJson["lint-staged"];
     if (embeddedLintStaged !== undefined) {

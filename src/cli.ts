@@ -3,6 +3,7 @@ import {
     configurePackageJson,
     loadTemplates,
     synchronizeManagedFile,
+    TYPESCRIPT_VERSION,
     type Confirm,
     type Logger,
 } from "./configure.ts";
@@ -10,7 +11,7 @@ import { initializeGitRepository, protectMainBranch } from "./github.ts";
 import { requireSuccess, runCommand, type CommandRunner } from "./process.ts";
 
 const TOOL_PACKAGES = [
-    "typescript@7.0.2",
+    `typescript@${TYPESCRIPT_VERSION}`,
     "oxlint@1.77.0",
     "oxlint-tsgolint@7.0.2001",
     "@oxlint/plugins@1.77.0",
@@ -102,7 +103,13 @@ export async function runCli(options: CliOptions = {}): Promise<number> {
         }
 
         const toolPackages = effect ? [...TOOL_PACKAGES, ...EFFECT_TOOL_PACKAGES] : TOOL_PACKAGES;
-        const installCommand = [process.execPath, "add", "--dev", ...toolPackages] as const;
+        const installCommand = [
+            process.execPath,
+            "add",
+            "--dev",
+            "--ignore-scripts",
+            ...toolPackages,
+        ] as const;
         logger.log(`Installing ${toolPackages.join(", ")}...`);
         const installed = await runner(installCommand, { cwd, stdio: "inherit" });
         requireSuccess(installCommand, installed);
@@ -124,6 +131,10 @@ export async function runCli(options: CliOptions = {}): Promise<number> {
             ] as const;
             const setup = await runner(setupCommand, { cwd, stdio: "inherit" });
             requireSuccess(setupCommand, setup);
+            const reinstallCommand = [process.execPath, "install", "--ignore-scripts"] as const;
+            logger.log("Applying Effect TypeScript dependency changes...");
+            const reinstalled = await runner(reinstallCommand, { cwd, stdio: "inherit" });
+            requireSuccess(reinstallCommand, reinstalled);
 
             const patchCommand = [
                 process.execPath,
