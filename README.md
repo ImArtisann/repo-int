@@ -1,4 +1,4 @@
-# @imartisann/repo-int
+# @artisann-studios/repo-int
 
 Public Bun CLI for applying the repository defaults used by ImArtisann.
 
@@ -10,17 +10,11 @@ not need to run `bun init` or `bun install` first:
 ```bash
 mkdir my-repository
 cd my-repository
-bun x @imartisann/repo-int --yes
+bun x @artisann-studios/repo-int --yes
 ```
 
 The package is published on the public npm registry, so installation does not
-require a GitHub token. If you previously mapped the `@imartisann` scope to
-GitHub Packages, remove these lines from your user-level `~/.npmrc`:
-
-```ini
-@imartisann:registry=https://npm.pkg.github.com
-//npm.pkg.github.com/:_authToken=...
-```
+require registry credentials.
 
 The same command can be run in a directory that already contains `bun init -y`
 output; repo-int migrates its TypeScript peer dependency before installing
@@ -45,7 +39,7 @@ replacement. In non-interactive environments they are also preserved. Pass
 `--yes` to replace every differing managed configuration:
 
 ```bash
-bun x @imartisann/repo-int --yes
+bun x @artisann-studios/repo-int --yes
 ```
 
 Pass `--effect` to also install the compatible `@effect/tsgo` release, configure
@@ -54,7 +48,7 @@ recommended Oxlint preset, and install the Effect-focused local rules under
 `tools/oxlint/effect/`:
 
 ```bash
-bun x @imartisann/repo-int --effect --yes
+bun x @artisann-studios/repo-int --effect --yes
 ```
 
 Branch protection is skipped when `gh` is unavailable or unauthenticated, the
@@ -70,6 +64,4 @@ bun run check
 ```
 
 Publishing a GitHub release runs `.github/workflows/publish.yml`, verifies the
-package, and publishes it with public access to npm. The first npm publication
-can use an `NPM_TOKEN` repository secret; subsequent releases can use npm
-trusted publishing with this GitHub Actions workflow.
+package, and publishes it to npm through trusted publishing.

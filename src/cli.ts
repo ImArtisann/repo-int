@@ -32,7 +32,7 @@ export interface CliOptions {
 const HELP = `repo-int
 
 Usage:
-  bun x @imartisann/repo-int [--effect] [--yes]
+  bun x @artisann-studios/repo-int [--effect] [--yes]
 
 Options:
       --effect  Add the Effect language service and Effect-focused Oxlint rules
