@@ -1,6 +1,6 @@
 {
     "name": "@artisann-studios/repo-int",
-    "version": "0.2.1",
+    "version": "0.3.0",
     "description": "Initialize a Bun repository with TypeScript-Go 7, Oxc tooling, anti-slop rules, optional Effect tooling, Husky, Dependabot, and branch protection.",
     "license": "UNLICENSED",
     "repository": {

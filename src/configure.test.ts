@@ -18,6 +18,14 @@ const template: LoadedTemplate = {
     source: "unused",
     tool: "test-tool",
 };
+const gitignoreTemplate: LoadedTemplate = {
+    alternatives: [],
+    content: "# environment variables\n.env\n.env.*\n!.env.example\n!.env.*.example\n",
+    destination: ".gitignore",
+    mergeIgnorePatterns: true,
+    source: "gitignore",
+    tool: "gitignore",
+};
 
 afterEach(async () => {
     await Promise.all(
@@ -85,6 +93,42 @@ describe("managed configuration files", () => {
         expect(status).toBe("updated");
         expect(await Bun.file(join(cwd, "tool.config.ts")).exists()).toBeFalse();
         expect(await readFile(join(cwd, ".toolrc"), "utf8")).toBe(template.content);
+    });
+
+    test("adds missing gitignore patterns without replacing existing rules", async () => {
+        const cwd = await temporaryDirectory();
+        const path = join(cwd, ".gitignore");
+        await writeFile(path, "custom-generated/\n.env\n!.env.example\n!.env.*.example\n");
+
+        const status = await synchronizeManagedFile(
+            cwd,
+            gitignoreTemplate,
+            async () => {
+                throw new Error("Merging ignore patterns must not prompt.");
+            },
+            logger,
+        );
+        const merged = await readFile(path, "utf8");
+
+        expect(status).toBe("updated");
+        expect(merged).toContain("custom-generated/");
+        expect(merged).toContain("# repo-int managed ignores");
+        expect(merged).toContain(".env.*");
+        expect(merged).toContain("!.env.example");
+        expect(merged).toContain("!.env.*.example");
+        expect(merged.split(/\r?\n/).filter((line) => line === ".env")).toHaveLength(1);
+        const mergedLines = merged.split(/\r?\n/);
+        expect(mergedLines.lastIndexOf("!.env.example")).toBeGreaterThan(
+            mergedLines.lastIndexOf(".env.*"),
+        );
+        expect(mergedLines.lastIndexOf("!.env.*.example")).toBeGreaterThan(
+            mergedLines.lastIndexOf(".env.*"),
+        );
+
+        expect(
+            await synchronizeManagedFile(cwd, gitignoreTemplate, async () => false, logger),
+        ).toBe("unchanged");
+        expect(await readFile(path, "utf8")).toBe(merged);
     });
 });
 

@@ -23,6 +23,12 @@ TypeScript-Go 7.
 The command:
 
 - initializes Git with `main` when the directory is not already in a worktree;
+- creates or extends `.gitignore` with dependency, build, cache, log, test, and
+  environment-file patterns while preserving existing rules;
+- ignores `.env` and `.env.*` variants such as `.env.vite.prod` and
+  `.env.vite.local`, while keeping `.env.example` variants trackable;
+- installs an assertive `.coderabbit.yaml` configuration with automatic,
+  incremental reviews enabled;
 - installs native TypeScript-Go 7.0.2, the matching Oxlint type-aware backend,
   `oxfmt`, `oxlint`, `husky`, and `lint-staged` as Bun development dependencies;
 - installs the local anti-slop Oxlint plugin under `tools/oxlint/anti-slop/` and

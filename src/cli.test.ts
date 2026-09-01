@@ -64,6 +64,13 @@ describe("CLI initialization profiles", () => {
         const oxlintConfig = await readFile(join(cwd, "oxlint.config.ts"), "utf8");
         expect(oxlintConfig).toContain('name: "anti-slop"');
         expect(oxlintConfig).not.toContain("@effect/tsgo");
+        const gitignore = await readFile(join(cwd, ".gitignore"), "utf8");
+        expect(gitignore).toContain(".env.*");
+        expect(gitignore).toContain("!.env.example");
+        expect(gitignore).toContain("!.env.*.example");
+        const codeRabbit = await readFile(join(cwd, ".coderabbit.yaml"), "utf8");
+        expect(codeRabbit).toContain("schema.v2.json");
+        expect(codeRabbit).toContain("profile: assertive");
         expect(calls.some((command) => command.includes("effect-tsgo"))).toBeFalse();
     });
 

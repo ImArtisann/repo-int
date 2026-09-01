@@ -13,6 +13,7 @@ export interface ManagedTemplate {
     alternatives: readonly string[];
     destination: string;
     createOnly?: boolean;
+    mergeIgnorePatterns?: boolean;
     executable?: boolean;
     source: string;
     tool: string;
@@ -28,6 +29,19 @@ export interface TemplateOptions {
 }
 
 export const MANAGED_TEMPLATES: readonly ManagedTemplate[] = [
+    {
+        tool: "gitignore",
+        destination: ".gitignore",
+        alternatives: [],
+        mergeIgnorePatterns: true,
+        source: "gitignore",
+    },
+    {
+        tool: "CodeRabbit",
+        destination: ".coderabbit.yaml",
+        alternatives: [".coderabbit.yml"],
+        source: "coderabbit.yaml",
+    },
     {
         tool: "oxfmt",
         destination: "oxfmt.config.ts",
@@ -99,6 +113,57 @@ async function writeManagedFile(path: string, content: string, executable: boole
     if (executable) await chmod(path, 0o755);
 }
 
+const GITIGNORE_MERGE_HEADER = "# repo-int managed ignores";
+
+function gitignorePatterns(content: string): string[] {
+    return content
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0 && !line.startsWith("#"));
+}
+
+async function mergeGitignorePatterns(
+    destination: string,
+    template: LoadedTemplate,
+    logger: Logger,
+): Promise<FileStatus> {
+    const existing = await readFile(destination, "utf8");
+    const existingPatterns = new Set(gitignorePatterns(existing));
+    const templateSections = template.content
+        .split(/\r?\n(?:[ \t]*\r?\n)+/)
+        .map(gitignorePatterns)
+        .filter((patterns) => patterns.length > 0);
+    const missingPatterns = templateSections.flatMap((patterns) => {
+        const missing = patterns.filter((pattern) => !existingPatterns.has(pattern));
+        if (missing.length === 0) return [];
+        return [
+            ...missing,
+            ...patterns.filter((pattern) => pattern.startsWith("!") && !missing.includes(pattern)),
+        ];
+    });
+    if (missingPatterns.length === 0) {
+        logger.log(`[unchanged] ${template.destination}`);
+        return "unchanged";
+    }
+
+    const eol = existing.includes("\r\n") ? "\r\n" : "\n";
+    const hasHeader = existing.split(/\r?\n/).includes(GITIGNORE_MERGE_HEADER);
+    const addition = [...(!hasHeader ? [GITIGNORE_MERGE_HEADER] : []), ...missingPatterns].join(
+        eol,
+    );
+    const separator =
+        existing.length === 0
+            ? ""
+            : existing.endsWith(`${eol}${eol}`)
+              ? ""
+              : existing.endsWith(eol)
+                ? eol
+                : `${eol}${eol}`;
+    await writeFile(destination, `${existing}${separator}${addition}${eol}`);
+    logger.log(`[updated] ${template.destination}`);
+    return "updated";
+}
+
 async function loadTemplateDirectory(
     templateRoot: string,
     directory: string,
@@ -162,6 +227,9 @@ export async function synchronizeManagedFile(
 ): Promise<FileStatus> {
     const destination = resolve(cwd, template.destination);
     const destinationExists = await fileExists(destination);
+    if (template.mergeIgnorePatterns && destinationExists) {
+        return mergeGitignorePatterns(destination, template, logger);
+    }
     const existingAlternatives: { content: string; relativePath: string }[] = [];
 
     for (const relativePath of template.alternatives) {
