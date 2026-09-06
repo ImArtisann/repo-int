@@ -54,3 +54,15 @@ tmp/
 .idea/
 .DS_Store
 Thumbs.db
+
+# generated
+.alchemy/
+.wrangler/
+.dev.vars
+.convex/
+.tanstack/
+.nitro/
+
+# local tool overrides
+lefthook-local.yaml
+lefthook-local.yml

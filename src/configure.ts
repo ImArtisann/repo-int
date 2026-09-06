@@ -1,5 +1,5 @@
 import { basename, dirname, resolve } from "node:path";
-import { chmod, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 
 export interface Logger {
     error(message: string): void;
@@ -10,13 +10,12 @@ export interface Logger {
 export type Confirm = (question: string) => Promise<boolean>;
 
 export interface ManagedTemplate {
-    alternatives: readonly string[];
+    tool: string;
     destination: string;
+    source: string;
     createOnly?: boolean;
     mergeIgnorePatterns?: boolean;
-    executable?: boolean;
-    source: string;
-    tool: string;
+    mergePathFilters?: boolean;
 }
 
 export interface LoadedTemplate extends ManagedTemplate {
@@ -24,93 +23,27 @@ export interface LoadedTemplate extends ManagedTemplate {
 }
 
 export type FileStatus = "created" | "unchanged" | "updated" | "skipped";
-export interface TemplateOptions {
-    effect?: boolean;
+
+export interface PackageJsonSpec {
+    /** Set only when the field is missing. */
+    packageManager?: string;
+    /** Missing globs are appended; array and `{ packages: [] }` object forms are supported. */
+    workspaces?: readonly string[];
+    /** Added when missing, never overwritten. Written to the top-level `catalog`, unless
+     * object-form workspaces already carry a `catalog` key (never both). */
+    catalog?: Readonly<Record<string, string>>;
+    dependencies?: Readonly<Record<string, string>>;
+    devDependencies?: Readonly<Record<string, string>>;
+    scripts?: Readonly<Record<string, string>>;
 }
-
-export const MANAGED_TEMPLATES: readonly ManagedTemplate[] = [
-    {
-        tool: "gitignore",
-        destination: ".gitignore",
-        alternatives: [],
-        mergeIgnorePatterns: true,
-        source: "gitignore",
-    },
-    {
-        tool: "CodeRabbit",
-        destination: ".coderabbit.yaml",
-        alternatives: [".coderabbit.yml"],
-        source: "coderabbit.yaml",
-    },
-    {
-        tool: "oxfmt",
-        destination: "oxfmt.config.ts",
-        alternatives: [".oxfmtrc.json", ".oxfmtrc.jsonc", "oxfmt.config.mts"],
-        source: "oxfmt.config.ts",
-    },
-    {
-        tool: "oxlint",
-        destination: "oxlint.config.ts",
-        alternatives: [".oxlintrc.json", ".oxlintrc.jsonc", "oxlint.config.mts"],
-        source: "oxlint.default.config.ts",
-    },
-    {
-        tool: "lint-staged",
-        destination: ".lintstagedrc.json",
-        alternatives: [
-            ".lintstagedrc",
-            ".lintstagedrc.yaml",
-            ".lintstagedrc.yml",
-            ".lintstagedrc.js",
-            ".lintstagedrc.cjs",
-            ".lintstagedrc.mjs",
-            "lint-staged.config.js",
-            "lint-staged.config.cjs",
-            "lint-staged.config.mjs",
-            "lint-staged.config.ts",
-        ],
-        source: "lintstagedrc.json",
-    },
-    {
-        tool: "husky",
-        destination: ".husky/pre-commit",
-        alternatives: [],
-        executable: true,
-        source: "pre-commit",
-    },
-    {
-        tool: "Dependabot",
-        destination: ".github/dependabot.yml",
-        alternatives: [],
-        source: "dependabot.yml",
-    },
-];
-const EFFECT_TSCONFIG_TEMPLATE: ManagedTemplate = {
-    tool: "Effect TypeScript",
-    destination: "tsconfig.json",
-    alternatives: [],
-    createOnly: true,
-    source: "tsconfig.effect.json",
-};
-
-const DESIRED_SCRIPTS: Readonly<Record<string, string>> = {
-    format: "oxfmt --write .",
-    "format:check": "oxfmt --check .",
-    lint: "oxlint . --no-error-on-unmatched-pattern",
-    "lint:fix": "oxlint --fix . --no-error-on-unmatched-pattern",
-    prepare: "bunx --bun husky",
-};
-const EFFECT_PATCH_SCRIPT = "effect-tsgo patch --typescript --oxlint";
-export const TYPESCRIPT_VERSION = "7.0.2";
 
 async function fileExists(path: string): Promise<boolean> {
     return Bun.file(path).exists();
 }
 
-async function writeManagedFile(path: string, content: string, executable: boolean): Promise<void> {
+async function writeManagedFile(path: string, content: string): Promise<void> {
     await mkdir(dirname(path), { recursive: true });
-    await writeFile(path, content, executable ? { mode: 0o755 } : undefined);
-    if (executable) await chmod(path, 0o755);
+    await writeFile(path, content);
 }
 
 const GITIGNORE_MERGE_HEADER = "# repo-int managed ignores";
@@ -164,59 +97,109 @@ async function mergeGitignorePatterns(
     return "updated";
 }
 
-async function loadTemplateDirectory(
-    templateRoot: string,
-    directory: string,
-    tool: string,
-): Promise<LoadedTemplate[]> {
-    const entries = await readdir(resolve(templateRoot, directory), { withFileTypes: true });
-    const loaded = await Promise.all(
-        entries
-            .toSorted((left, right) => left.name.localeCompare(right.name))
-            .map(async (entry): Promise<LoadedTemplate[]> => {
-                const source = `${directory}/${entry.name}`;
-                if (entry.isDirectory()) {
-                    return loadTemplateDirectory(templateRoot, source, tool);
-                }
-                if (!entry.isFile()) return [];
-                return [
-                    {
-                        tool,
-                        destination: source,
-                        alternatives: [],
-                        source,
-                        content: await readFile(resolve(templateRoot, source), "utf8"),
-                    },
-                ];
-            }),
-    );
-    return loaded.flat();
+function codeRabbitPathFilterItems(patterns: readonly string[], indent: string): string[] {
+    return patterns.map((pattern) => `${indent}- "${pattern}"`);
 }
 
-export async function loadTemplates(options: TemplateOptions = {}): Promise<LoadedTemplate[]> {
-    const templateRoot = resolve(import.meta.dir, "../templates");
-    const effect = options.effect === true;
-    const configuredTemplates = MANAGED_TEMPLATES.map((template) =>
-        effect && template.tool === "oxlint"
-            ? { ...template, source: "oxlint.effect.config.ts" }
-            : template,
+function parseCodeRabbitPathFilters(text: string): string[] {
+    const parsed: unknown = Bun.YAML.parse(text);
+    const reviews =
+        typeof parsed === "object" && parsed !== null && "reviews" in parsed
+            ? parsed.reviews
+            : undefined;
+    const pathFilters =
+        typeof reviews === "object" && reviews !== null && "path_filters" in reviews
+            ? reviews.path_filters
+            : undefined;
+    return Array.isArray(pathFilters) && pathFilters.every((item) => typeof item === "string")
+        ? pathFilters
+        : [];
+}
+
+function insertCodeRabbitPathFilters(text: string, patterns: readonly string[]): string {
+    const eol = text.includes("\r\n") ? "\r\n" : "\n";
+    const lines = text.split(/\r?\n/);
+    const reviewsIndex = lines.findIndex((line) => /^reviews:\s*$/.test(line));
+    if (reviewsIndex === -1) {
+        const body = text.length === 0 ? "" : text.endsWith(eol) ? text : `${text}${eol}`;
+        const block = [
+            "reviews:",
+            "    path_filters:",
+            ...codeRabbitPathFilterItems(patterns, "        "),
+        ];
+        return `${body}${block.join(eol)}${eol}`;
+    }
+
+    let blockEnd = lines.length;
+    for (let index = reviewsIndex + 1; index < lines.length; index += 1) {
+        if (/^\S/.test(lines[index]!)) {
+            blockEnd = index;
+            break;
+        }
+    }
+
+    let pathFiltersIndex = -1;
+    for (let index = reviewsIndex + 1; index < blockEnd; index += 1) {
+        if (/^(\s*)path_filters:\s*$/.test(lines[index]!)) {
+            pathFiltersIndex = index;
+            break;
+        }
+    }
+
+    if (pathFiltersIndex === -1) {
+        lines.splice(
+            reviewsIndex + 1,
+            0,
+            "    path_filters:",
+            ...codeRabbitPathFilterItems(patterns, "        "),
+        );
+        return lines.join(eol);
+    }
+
+    const indent = `${/^(\s*)path_filters:\s*$/.exec(lines[pathFiltersIndex]!)?.[1] ?? ""}    `;
+    let insertAt = pathFiltersIndex + 1;
+    while (insertAt < blockEnd && /^\s*- /.test(lines[insertAt]!)) insertAt += 1;
+    lines.splice(insertAt, 0, ...codeRabbitPathFilterItems(patterns, indent));
+    return lines.join(eol);
+}
+
+async function mergePathFiltersIntoTemplate(
+    destination: string,
+    template: LoadedTemplate,
+    confirm: Confirm,
+    logger: Logger,
+): Promise<FileStatus> {
+    const existing = await readFile(destination, "utf8");
+    let desired = template.content;
+    if (existing !== template.content) {
+        try {
+            // Existing path filters are unioned into the template so re-running the config
+            // template never resets filters appended by other templates.
+            const templateFilters = parseCodeRabbitPathFilters(template.content);
+            const extras = parseCodeRabbitPathFilters(existing).filter(
+                (pattern) => !templateFilters.includes(pattern),
+            );
+            if (extras.length > 0) desired = insertCodeRabbitPathFilters(template.content, extras);
+        } catch {
+            // Unparsable YAML keeps the regular create/confirm/overwrite behavior.
+        }
+    }
+    if (existing === desired) {
+        logger.log(`[unchanged] ${template.destination}`);
+        return "unchanged";
+    }
+
+    const accepted = await confirm(
+        `${template.destination} differs from the repo-int template. Overwrite it?`,
     );
-    const managedTemplates = effect
-        ? [...configuredTemplates, EFFECT_TSCONFIG_TEMPLATE]
-        : configuredTemplates;
-    const groups = await Promise.all([
-        Promise.all(
-            managedTemplates.map(async (template) => ({
-                ...template,
-                content: await readFile(resolve(templateRoot, template.source), "utf8"),
-            })),
-        ),
-        loadTemplateDirectory(templateRoot, "tools/oxlint/anti-slop", "anti-slop"),
-        ...(effect
-            ? [loadTemplateDirectory(templateRoot, "tools/oxlint/effect", "Effect Oxlint")]
-            : []),
-    ]);
-    return groups.flat();
+    if (!accepted) {
+        logger.warn(`[kept] ${template.destination}`);
+        return "skipped";
+    }
+
+    await writeManagedFile(destination, desired);
+    logger.log(`[updated] ${template.destination}`);
+    return "updated";
 }
 
 export async function synchronizeManagedFile(
@@ -230,48 +213,12 @@ export async function synchronizeManagedFile(
     if (template.mergeIgnorePatterns && destinationExists) {
         return mergeGitignorePatterns(destination, template, logger);
     }
-    const existingAlternatives: { content: string; relativePath: string }[] = [];
-
-    for (const relativePath of template.alternatives) {
-        const path = resolve(cwd, relativePath);
-        if (await fileExists(path)) {
-            existingAlternatives.push({ content: await readFile(path, "utf8"), relativePath });
-        }
-    }
-
-    if (!destinationExists && existingAlternatives.length === 1) {
-        const existing = existingAlternatives[0];
-        if (existing?.content === template.content) {
-            logger.log(`[unchanged] ${existing.relativePath}`);
-            return "unchanged";
-        }
-    }
-
-    if (existingAlternatives.length > 0) {
-        const paths = [
-            ...(destinationExists ? [template.destination] : []),
-            ...existingAlternatives.map(({ relativePath }) => relativePath),
-        ];
-        const accepted = await confirm(
-            `${template.tool} configuration exists at ${paths.join(", ")} and differs from repo-int. Replace it with ${template.destination}?`,
-        );
-        if (!accepted) {
-            logger.warn(`[kept] ${paths.join(", ")}`);
-            return "skipped";
-        }
-
-        await writeManagedFile(destination, template.content, template.executable === true);
-        await Promise.all(
-            existingAlternatives.map(({ relativePath }) =>
-                rm(resolve(cwd, relativePath), { force: true }),
-            ),
-        );
-        logger.log(`[updated] ${template.destination}`);
-        return "updated";
+    if (template.mergePathFilters && destinationExists) {
+        return mergePathFiltersIntoTemplate(destination, template, confirm, logger);
     }
 
     if (!destinationExists) {
-        await writeManagedFile(destination, template.content, template.executable === true);
+        await writeManagedFile(destination, template.content);
         logger.log(`[created] ${template.destination}`);
         return "created";
     }
@@ -282,7 +229,6 @@ export async function synchronizeManagedFile(
 
     const existing = await readFile(destination, "utf8");
     if (existing === template.content) {
-        if (template.executable) await chmod(destination, 0o755);
         logger.log(`[unchanged] ${template.destination}`);
         return "unchanged";
     }
@@ -295,28 +241,17 @@ export async function synchronizeManagedFile(
         return "skipped";
     }
 
-    await writeManagedFile(destination, template.content, template.executable === true);
+    await writeManagedFile(destination, template.content);
     logger.log(`[updated] ${template.destination}`);
     return "updated";
 }
 
-function defaultPackageName(cwd: string): string {
+export function defaultPackageName(cwd: string): string {
     const normalized = basename(cwd)
         .toLowerCase()
         .replace(/[^a-z0-9._-]+/g, "-")
         .replace(/^[._-]+|[._-]+$/g, "");
     return normalized || "bun-app";
-}
-
-function stableJson(value: unknown): string {
-    if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
-    if (value !== null && typeof value === "object") {
-        const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) =>
-            a.localeCompare(b),
-        );
-        return `{${entries.map(([key, item]) => `${JSON.stringify(key)}:${stableJson(item)}`).join(",")}}`;
-    }
-    return JSON.stringify(value) ?? "undefined";
 }
 
 function formatPackageJson(value: Record<string, unknown>, original: string | undefined): string {
@@ -325,13 +260,138 @@ function formatPackageJson(value: Record<string, unknown>, original: string | un
     return `${JSON.stringify(value, null, indentation).replaceAll("\n", eol)}${eol}`;
 }
 
-export async function configurePackageJson(
-    cwd: string,
-    desiredLintStaged: unknown,
+function workspacesPackages(path: string, workspaces: unknown): string[] {
+    if (Array.isArray(workspaces)) {
+        if (!workspaces.every((entry) => typeof entry === "string")) {
+            throw new Error(`${path} has a non-string "workspaces" entry.`);
+        }
+        return workspaces;
+    }
+    if (typeof workspaces !== "object" || workspaces === null) {
+        throw new Error(`${path} has an invalid "workspaces" field.`);
+    }
+    // Object form; every member is validated before use and other keys are preserved.
+    const record = workspaces as Record<string, unknown>;
+    const packages = record["packages"];
+    if (packages === undefined) {
+        const created: string[] = [];
+        record["packages"] = created;
+        return created;
+    }
+    if (!Array.isArray(packages)) {
+        throw new Error(`${path} has a non-array "workspaces.packages" field.`);
+    }
+    if (!packages.every((entry) => typeof entry === "string")) {
+        throw new Error(`${path} has a non-string "workspaces.packages" entry.`);
+    }
+    return packages;
+}
+
+function mergeWorkspaces(
+    path: string,
+    packageJson: Record<string, unknown>,
+    desired: readonly string[],
+): boolean {
+    const value = packageJson["workspaces"];
+    if (value === undefined) {
+        if (desired.length === 0) return false;
+        packageJson["workspaces"] = [...desired];
+        return true;
+    }
+    const packages = workspacesPackages(path, value);
+    const missing = desired.filter((glob) => !packages.includes(glob));
+    if (missing.length === 0) return false;
+    packages.push(...missing);
+    return true;
+}
+
+function mergeCatalog(
+    path: string,
+    packageJson: Record<string, unknown>,
+    desired: Readonly<Record<string, string>>,
+): boolean {
+    const entries = Object.entries(desired);
+    if (entries.length === 0) return false;
+    const workspaces = packageJson["workspaces"];
+    // Object-form workspaces that already carry a `catalog` key own the catalog;
+    // repo-int never writes both locations.
+    const target =
+        typeof workspaces === "object" && workspaces !== null && "catalog" in workspaces
+            ? (workspaces as Record<string, unknown>)
+            : packageJson;
+    const existing = target["catalog"];
+    if (existing === undefined) {
+        target["catalog"] = Object.fromEntries(entries);
+        return true;
+    }
+    if (existing === null || Array.isArray(existing) || typeof existing !== "object") {
+        throw new Error(`${path} has a non-object "catalog" field.`);
+    }
+    const catalog = existing as Record<string, unknown>;
+    let changed = false;
+    for (const [name, version] of entries) {
+        if (catalog[name] !== undefined) continue;
+        catalog[name] = version;
+        changed = true;
+    }
+    return changed;
+}
+
+const PACKAGE_JSON_ENTRY_LABELS = {
+    dependencies: "dependency",
+    devDependencies: "devDependency",
+    scripts: "script",
+} as const;
+
+type PackageJsonEntryField = keyof typeof PACKAGE_JSON_ENTRY_LABELS;
+
+async function mergePackageJsonEntries(
+    path: string,
+    packageJson: Record<string, unknown>,
+    field: PackageJsonEntryField,
+    desired: Readonly<Record<string, string>>,
     confirm: Confirm,
     logger: Logger,
-    options: TemplateOptions = {},
-): Promise<{ manageLintStagedFile: boolean }> {
+): Promise<boolean> {
+    const value = packageJson[field];
+    if (value === undefined) {
+        if (Object.keys(desired).length === 0) return false;
+        packageJson[field] = { ...desired };
+        return true;
+    }
+    if (value === null || Array.isArray(value) || typeof value !== "object") {
+        throw new Error(`${path} has a non-object "${field}" field.`);
+    }
+    const entries = value as Record<string, unknown>;
+    const label = PACKAGE_JSON_ENTRY_LABELS[field];
+    let changed = false;
+    for (const [name, version] of Object.entries(desired)) {
+        const existing = entries[name];
+        if (existing === undefined) {
+            entries[name] = version;
+            changed = true;
+            continue;
+        }
+        if (existing === version) continue;
+        const accepted = await confirm(
+            `package.json ${label} "${name}" differs from repo-int. Change it from ${JSON.stringify(existing)} to ${JSON.stringify(version)}?`,
+        );
+        if (accepted) {
+            entries[name] = version;
+            changed = true;
+        } else {
+            logger.warn(`[kept] package.json ${label} "${name}"`);
+        }
+    }
+    return changed;
+}
+
+export async function updatePackageJson(
+    cwd: string,
+    desired: PackageJsonSpec,
+    confirm: Confirm,
+    logger: Logger,
+): Promise<FileStatus> {
     const path = resolve(cwd, "package.json");
     const exists = await fileExists(path);
     const original = exists ? await readFile(path, "utf8") : undefined;
@@ -340,7 +400,7 @@ export async function configurePackageJson(
     if (original === undefined) {
         packageJson = {
             name: defaultPackageName(cwd),
-            version: "0.1.0",
+            version: "0.0.0",
             private: true,
             type: "module",
         };
@@ -360,122 +420,67 @@ export async function configurePackageJson(
     }
 
     let changed = !exists;
-    const peerDependenciesValue = packageJson.peerDependencies;
-    if (
-        peerDependenciesValue !== undefined &&
-        (peerDependenciesValue === null ||
-            Array.isArray(peerDependenciesValue) ||
-            typeof peerDependenciesValue !== "object")
-    ) {
-        throw new Error(`${path} has a non-object "peerDependencies" field.`);
-    }
-    const peerDependencies = peerDependenciesValue as Record<string, unknown> | undefined;
-    if (peerDependencies !== undefined) {
-        const typescriptPeer = peerDependencies.typescript;
-        if (typescriptPeer !== undefined) {
-            if (typeof typescriptPeer !== "string") {
-                throw new Error(`${path} has a non-string TypeScript peer dependency.`);
-            }
-            if (!Bun.semver.satisfies(TYPESCRIPT_VERSION, typescriptPeer)) {
-                const accepted = await confirm(
-                    `package.json peer dependency "typescript" (${JSON.stringify(typescriptPeer)}) conflicts with repo-int's managed TypeScript ${TYPESCRIPT_VERSION}. Remove it?`,
-                );
-                if (!accepted) {
-                    throw new Error(
-                        `Cannot install TypeScript ${TYPESCRIPT_VERSION} while the incompatible peer dependency is kept.`,
-                    );
-                }
-                delete peerDependencies.typescript;
-                if (Object.keys(peerDependencies).length === 0) {
-                    delete packageJson.peerDependencies;
-                }
-                changed = true;
-            }
-        }
-    }
-
-    let manageLintStagedFile = true;
-    const embeddedLintStaged = packageJson["lint-staged"];
-    if (embeddedLintStaged !== undefined) {
-        if (stableJson(embeddedLintStaged) === stableJson(desiredLintStaged)) {
-            manageLintStagedFile = false;
-            logger.log("[unchanged] package.json lint-staged configuration");
-        } else if (
-            await confirm(
-                "package.json contains a lint-staged configuration that differs from repo-int. Replace it with .lintstagedrc.json?",
-            )
-        ) {
-            delete packageJson["lint-staged"];
-            changed = true;
-        } else {
-            manageLintStagedFile = false;
-            logger.warn("[kept] package.json lint-staged configuration");
-        }
-    }
-
-    const scriptsValue = packageJson.scripts;
-    if (
-        scriptsValue !== undefined &&
-        (scriptsValue === null || Array.isArray(scriptsValue) || typeof scriptsValue !== "object")
-    ) {
-        throw new Error(`${path} has a non-object "scripts" field.`);
-    }
-    const scripts = (scriptsValue ?? {}) as Record<string, unknown>;
-    if (scriptsValue === undefined) {
-        packageJson.scripts = scripts;
+    if (desired.packageManager !== undefined && packageJson["packageManager"] === undefined) {
+        packageJson["packageManager"] = desired.packageManager;
         changed = true;
     }
-
-    const effect = options.effect === true;
-    const desiredScripts = {
-        ...DESIRED_SCRIPTS,
-        ...(effect ? { prepare: `${DESIRED_SCRIPTS.prepare} && ${EFFECT_PATCH_SCRIPT}` } : {}),
-    };
-    for (const [name, desired] of Object.entries(desiredScripts)) {
-        const existing = scripts[name];
-        if (existing === undefined) {
-            scripts[name] = desired;
-            changed = true;
-            continue;
-        }
-        const hasHusky =
-            name === "prepare" &&
-            typeof existing === "string" &&
-            /(^|\s|&&)husky($|\s|&&)/.test(existing);
-        const hasEffectPatch =
-            typeof existing === "string" && existing.includes(EFFECT_PATCH_SCRIPT);
-        if (
-            existing === desired ||
-            (name === "prepare" && hasHusky && (!effect || hasEffectPatch))
-        ) {
-            continue;
-        }
-
-        const proposed =
-            name === "prepare" && typeof existing === "string"
-                ? [
-                      existing,
-                      ...(!hasHusky ? [DESIRED_SCRIPTS.prepare] : []),
-                      ...(effect && !hasEffectPatch ? [EFFECT_PATCH_SCRIPT] : []),
-                  ].join(" && ")
-                : desired;
-        const accepted = await confirm(
-            `package.json script "${name}" differs from repo-int. Change it from ${JSON.stringify(existing)} to ${JSON.stringify(proposed)}?`,
-        );
-        if (accepted) {
-            scripts[name] = proposed;
-            changed = true;
-        } else {
-            logger.warn(`[kept] package.json script "${name}"`);
-        }
+    if (desired.workspaces !== undefined) {
+        changed = mergeWorkspaces(path, packageJson, desired.workspaces) || changed;
+    }
+    if (desired.catalog !== undefined) {
+        changed = mergeCatalog(path, packageJson, desired.catalog) || changed;
+    }
+    for (const field of ["dependencies", "devDependencies", "scripts"] as const) {
+        const entries = desired[field];
+        if (entries === undefined) continue;
+        changed =
+            (await mergePackageJsonEntries(path, packageJson, field, entries, confirm, logger)) ||
+            changed;
     }
 
-    if (changed) {
-        await writeFile(path, formatPackageJson(packageJson, original));
-        logger.log(`[${exists ? "updated" : "created"}] package.json`);
-    } else {
+    if (!changed) {
         logger.log("[unchanged] package.json");
+        return "unchanged";
     }
 
-    return { manageLintStagedFile };
+    await writeFile(path, formatPackageJson(packageJson, original));
+    const status: FileStatus = exists ? "updated" : "created";
+    logger.log(`[${status}] package.json`);
+    return status;
+}
+
+export async function mergeCodeRabbitPathFilters(
+    cwd: string,
+    patterns: readonly string[],
+    logger: Logger,
+): Promise<FileStatus> {
+    const destination = resolve(cwd, ".coderabbit.yaml");
+    if (!(await fileExists(destination))) {
+        const content = [
+            "reviews:",
+            "    path_filters:",
+            ...codeRabbitPathFilterItems(patterns, "        "),
+        ].join("\n");
+        await writeManagedFile(destination, `${content}\n`);
+        logger.log("[created] .coderabbit.yaml");
+        return "created";
+    }
+
+    const original = await readFile(destination, "utf8");
+    const existing = parseCodeRabbitPathFilters(original);
+    const missing = patterns.filter((pattern) => !existing.includes(pattern));
+    if (missing.length === 0) {
+        logger.log("[unchanged] .coderabbit.yaml");
+        return "unchanged";
+    }
+
+    const merged = insertCodeRabbitPathFilters(original, missing);
+    await writeFile(destination, merged);
+    const persisted = parseCodeRabbitPathFilters(merged);
+    const absent = patterns.filter((pattern) => !persisted.includes(pattern));
+    if (absent.length > 0) {
+        throw new Error(`.coderabbit.yaml merge failed for: ${absent.join(", ")}`);
+    }
+    logger.log("[updated] .coderabbit.yaml");
+    return "updated";
 }

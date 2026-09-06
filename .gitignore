@@ -22,6 +22,10 @@ coverage/
 playwright-report/
 test-results/
 
+# zvec-grep local index (keep shared plugin settings)
+/.zvec-grep/*
+!/.zvec-grep/config.json
+
 # logs
 logs/
 *.log

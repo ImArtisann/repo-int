@@ -11,6 +11,13 @@ reviews:
         enabled: true
         auto_incremental_review: true
         drafts: false
+    path_filters:
+        - "!bun.lock"
+        - "!**/dist/**"
+        - "!**/.output/**"
+        - "!**/.alchemy/**"
+        - "!**/.wrangler/**"
+        - "!tools/oxlint/**"
 
 chat:
     auto_reply: true

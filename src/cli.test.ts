@@ -1,18 +1,13 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runCli } from "./cli.ts";
 import type { Logger } from "./configure.ts";
-import type { CommandResult, CommandRunner } from "./process.ts";
+import type { CommandRunner } from "./process.ts";
 
 const temporaryDirectories: string[] = [];
 const logger: Logger = { error() {}, log() {}, warn() {} };
-
-function success(stdout = ""): CommandResult {
-    return { exitCode: 0, stderr: "", stdout };
-}
-
 afterEach(async () => {
     await Promise.all(
         temporaryDirectories
@@ -20,138 +15,253 @@ afterEach(async () => {
             .map((directory) => rm(directory, { force: true, recursive: true })),
     );
 });
-
 async function temporaryDirectory(): Promise<string> {
     const directory = await mkdtemp(join(tmpdir(), "repo-int-cli-test-"));
     temporaryDirectories.push(directory);
     return directory;
 }
-
-function recordingRunner(calls: string[][]): CommandRunner {
-    return async (command) => {
-        calls.push([...command]);
-        if (command[0] === "git") return success("true\n");
-        return success();
+function recordingRunner(calls: { command: readonly string[]; cwd: string }[] = []): CommandRunner {
+    return async (command, options) => {
+        calls.push({ command: [...command], cwd: options.cwd });
+        let stdout = "";
+        if (command[0] === "git") stdout = "true\n";
+        if (command[0] === "gh") stdout = "owner-from-gh\n";
+        if (command[1] === "pm") {
+            if (!(await Bun.file(join(options.cwd, "package.json")).exists())) {
+                return { exitCode: 1, stdout: "", stderr: "No package.json was found" };
+            }
+            const spec = command[3] ?? "";
+            const versions: Record<string, string> = {
+                "alchemy@latest": "2.0.0-beta.76",
+                "effect@latest": "3.22.1",
+                "effect@rc": "4.0.0-rc.112",
+            };
+            stdout = versions[spec] ?? (spec.startsWith("@confect/") ? "10.0.0-next.21" : "1.2.3");
+        }
+        return { exitCode: 0, stdout, stderr: "" };
     };
 }
 
-function installCall(calls: readonly string[][]): readonly string[] {
-    const command = calls.find((candidate) => candidate[1] === "add");
-    if (!command) throw new Error("Expected the tool installation command.");
-    return command;
-}
-
-describe("CLI initialization profiles", () => {
-    test("installs TypeScript-Go 7 and anti-slop by default", async () => {
+describe("template CLI", () => {
+    test("config produces a workspace toolchain with the requested GitHub owner", async () => {
         const cwd = await temporaryDirectory();
-        const calls: string[][] = [];
-
-        const status = await runCli({
-            args: ["--yes"],
-            cwd,
-            logger,
-            runner: recordingRunner(calls),
+        expect(
+            await runCli({
+                args: ["config", "--yes", "--owner", "acme"],
+                cwd,
+                logger,
+                runner: recordingRunner(),
+            }),
+        ).toBe(0);
+        const pkg = await Bun.file(join(cwd, "package.json")).json();
+        expect(pkg.workspaces).toEqual(["apps/*", "packages/*"]);
+        expect(pkg.catalog).toMatchObject({
+            alchemy: "2.0.0-beta.76",
+            effect: "4.0.0-rc.112",
+            lefthook: "^1.2.3",
         });
-
-        expect(status).toBe(0);
-        expect(installCall(calls)).toContain("typescript@7.0.2");
-        expect(installCall(calls)).toContain("--ignore-scripts");
-        expect(installCall(calls)).toContain("oxlint-tsgolint@7.0.2001");
-        expect(installCall(calls)).toContain("@oxlint/plugins@1.77.0");
-        expect(installCall(calls)).not.toContain("@effect/tsgo@0.36.4");
-        expect(await Bun.file(join(cwd, "tools/oxlint/anti-slop/index.ts")).exists()).toBeTrue();
-        expect(await Bun.file(join(cwd, "tools/oxlint/effect/index.ts")).exists()).toBeFalse();
-        const oxlintConfig = await readFile(join(cwd, "oxlint.config.ts"), "utf8");
-        expect(oxlintConfig).toContain('name: "anti-slop"');
-        expect(oxlintConfig).not.toContain("@effect/tsgo");
-        const gitignore = await readFile(join(cwd, ".gitignore"), "utf8");
-        expect(gitignore).toContain(".env.*");
-        expect(gitignore).toContain("!.env.example");
-        expect(gitignore).toContain("!.env.*.example");
-        const codeRabbit = await readFile(join(cwd, ".coderabbit.yaml"), "utf8");
-        expect(codeRabbit).toContain("schema.v2.json");
-        expect(codeRabbit).toContain("profile: assertive");
-        expect(calls.some((command) => command.includes("effect-tsgo"))).toBeFalse();
-    });
-
-    test("adds Effect TypeScript and Oxlint integrations with --effect", async () => {
-        const cwd = await temporaryDirectory();
-        const calls: string[][] = [];
-
-        const status = await runCli({
-            args: ["--effect", "--yes"],
-            cwd,
-            logger,
-            runner: recordingRunner(calls),
-        });
-
-        expect(status).toBe(0);
-        expect(installCall(calls)).toContain("@effect/tsgo@0.36.4");
-        const packageJson = JSON.parse(await readFile(join(cwd, "package.json"), "utf8")) as {
-            scripts: Record<string, string>;
-        };
-        expect(packageJson.scripts.prepare).toBe(
-            "bunx --bun husky && effect-tsgo patch --typescript --oxlint",
+        expect(pkg.devDependencies.lefthook).toBe("catalog:");
+        expect(pkg.devDependencies["vite-plus"]).toBe("0.3.0");
+        expect(pkg.scripts.prepare).toBe(
+            "lefthook install && effect-tsgo patch --typescript --oxlint",
         );
-        const tsconfig = await readFile(join(cwd, "tsconfig.json"), "utf8");
-        expect(tsconfig).toContain('"name": "@effect/language-service"');
-        expect(tsconfig).toContain('"diagnostics": false');
-        expect(await Bun.file(join(cwd, "tools/oxlint/effect/index.ts")).exists()).toBeTrue();
-        const effectPlugin = await readFile(join(cwd, "tools/oxlint/effect/index.ts"), "utf8");
-        expect(effectPlugin).toContain('name: "effect"');
-        const oxlintConfig = await readFile(join(cwd, "oxlint.config.ts"), "utf8");
-        expect(oxlintConfig).toContain("@effect/tsgo/oxlint-presets");
-        expect(oxlintConfig).toContain('"effect/no-cascading-layer-provide": "error"');
-        expect(calls).toContainEqual([
-            process.execPath,
-            "x",
-            "--bun",
-            "effect-tsgo",
-            "setup",
-            "--project",
-            "tsconfig.json",
-            "--non-interactive",
-            "--accept-defaults",
-            "--apply",
-            "--typescript",
-            "--oxlint",
-        ]);
-        expect(calls).toContainEqual([
-            process.execPath,
-            "x",
-            "--bun",
-            "effect-tsgo",
-            "patch",
-            "--typescript",
-            "--oxlint",
-        ]);
-        expect(calls).toContainEqual([process.execPath, "install", "--ignore-scripts"]);
-        const setupIndex = calls.findIndex((command) => command.includes("setup"));
-        const reinstallIndex = calls.findIndex((command) => command[1] === "install");
-        const patchIndex = calls.findIndex((command) => command.includes("patch"));
-        expect(setupIndex).toBeGreaterThanOrEqual(0);
-        expect(reinstallIndex).toBeGreaterThan(setupIndex);
-        expect(patchIndex).toBeGreaterThan(reinstallIndex);
+        expect(await Bun.file(join(cwd, "stacks/github.ts")).text()).toContain(
+            'const OWNER = "acme"',
+        );
+        expect(await Bun.file(join(cwd, ".github/workflows/ci.yml")).exists()).toBeTrue();
+        const filters = Bun.YAML.parse(await Bun.file(join(cwd, ".coderabbit.yaml")).text()) as {
+            reviews: { path_filters: string[] };
+        };
+        expect(filters.reviews.path_filters).toContain("!tools/oxlint/**");
     });
 
-    test("documents and accepts the effect option", async () => {
-        const messages: string[] = [];
-        const status = await runCli({
-            args: ["--help"],
-            logger: {
-                error(message) {
-                    if (message) messages.push(message);
-                },
-                log(message) {
-                    if (message) messages.push(message);
-                },
-                warn(message) {
-                    if (message) messages.push(message);
-                },
-            },
-        });
+    test("owner defaults to the authenticated GitHub user", async () => {
+        const cwd = await temporaryDirectory();
+        expect(
+            await runCli({ args: ["config", "--yes"], cwd, logger, runner: recordingRunner() }),
+        ).toBe(0);
+        expect(await Bun.file(join(cwd, "stacks/github.ts")).text()).toContain(
+            'const OWNER = "owner-from-gh"',
+        );
+    });
 
-        expect(status).toBe(0);
-        expect(messages.join("\n")).toContain("--effect");
+    test("frameworks require config before any scaffold writes", async () => {
+        const cwd = await temporaryDirectory();
+        const errors: string[] = [];
+        expect(
+            await runCli({
+                args: ["convex", "--yes"],
+                cwd,
+                logger: { ...logger, error: (message) => errors.push(message ?? "") },
+                runner: recordingRunner(),
+            }),
+        ).toBe(1);
+        expect(errors.join("\n")).toContain("run `repo-int config` first");
+        expect(await readdir(cwd)).toEqual([]);
+    });
+
+    test("canonical ordering reserves web for TanStack and static for Astro", async () => {
+        const cwd = await temporaryDirectory();
+        const calls: { command: readonly string[]; cwd: string }[] = [];
+        expect(
+            await runCli({
+                args: ["astro", "tanstack", "config", "--yes"],
+                cwd,
+                logger,
+                runner: recordingRunner(calls),
+            }),
+        ).toBe(0);
+        const web = await Bun.file(join(cwd, "apps/web/package.json")).json();
+        const astro = await Bun.file(join(cwd, "apps/static/package.json")).json();
+        expect(web.name).toBe("@repo/web");
+        expect(web.dependencies["@tanstack/react-start"]).toBe("catalog:");
+        expect(astro.name).toBe("@repo/static");
+        expect(astro.dependencies.astro).toBe("catalog:");
+        const pkg = await Bun.file(join(cwd, "package.json")).json();
+        expect(pkg.catalog["@alchemy.run/frontend-frameworks"]).toBe(pkg.catalog.alchemy);
+        const filters = Bun.YAML.parse(await Bun.file(join(cwd, ".coderabbit.yaml")).text()) as {
+            reviews: { path_filters: string[] };
+        };
+        expect(filters.reviews.path_filters).toContain("!apps/web/src/routeTree.gen.ts");
+        expect(filters.reviews.path_filters).toContain("!apps/static/.astro/**");
+        const buildIndex = calls.findIndex(
+            ({ command }) => command[1] === "run" && command[2] === "build",
+        );
+        expect(buildIndex).toBeGreaterThan(
+            calls.findIndex(({ command }) => command[1] === "install"),
+        );
+        expect(calls[buildIndex]?.cwd).toBe(join(cwd, "apps/web"));
+    });
+
+    test("backend code generation follows installation and excludes its generated targets", async () => {
+        const cwd = await temporaryDirectory();
+        const calls: { command: readonly string[]; cwd: string }[] = [];
+        expect(
+            await runCli({
+                args: ["convex", "config", "--yes"],
+                cwd,
+                logger,
+                runner: recordingRunner(calls),
+            }),
+        ).toBe(0);
+        expect(
+            await Bun.file(join(cwd, "packages/backend/confect/tables/notes.ts")).exists(),
+        ).toBeTrue();
+        const confect = calls.findIndex(
+            ({ command }) => command.includes("confect") && command.includes("codegen"),
+        );
+        const ai = calls.findIndex(({ command }) => command.includes("ai-files"));
+        expect(confect).toBeGreaterThan(calls.findIndex(({ command }) => command[1] === "install"));
+        expect(ai).toBeGreaterThan(confect);
+        expect(calls[confect]?.cwd).toBe(join(cwd, "packages/backend"));
+        const pkg = await Bun.file(join(cwd, "package.json")).json();
+        expect(pkg.catalog["@confect/core"]).toBe("10.0.0-next.21");
+        const filters = Bun.YAML.parse(await Bun.file(join(cwd, ".coderabbit.yaml")).text()) as {
+            reviews: { path_filters: string[] };
+        };
+        expect(filters.reviews.path_filters).toContain("!packages/backend/convex/**");
+    });
+
+    test("rerunning config preserves bytes and avoids catalog resolution", async () => {
+        const cwd = await temporaryDirectory();
+        const options = {
+            args: ["config", "--yes", "--owner", "acme"],
+            cwd,
+            logger,
+            runner: recordingRunner(),
+        };
+        expect(await runCli(options)).toBe(0);
+        const before = await Bun.file(join(cwd, "package.json")).text();
+        const calls: { command: readonly string[]; cwd: string }[] = [];
+        const messages: string[] = [];
+        expect(
+            await runCli({
+                ...options,
+                runner: recordingRunner(calls),
+                logger: { ...logger, log: (message) => messages.push(message ?? "") },
+            }),
+        ).toBe(0);
+        expect(await Bun.file(join(cwd, "package.json")).text()).toBe(before);
+        expect(messages.filter((message) => /\[(created|updated)\]/.test(message))).toEqual([]);
+        expect(calls.filter(({ command }) => command[1] === "pm")).toEqual([]);
+    });
+
+    test("occupied app directories fail before modifying existing files", async () => {
+        const cwd = await temporaryDirectory();
+        await mkdir(join(cwd, "apps/web"), { recursive: true });
+        await Bun.write(join(cwd, "apps/web/keep.txt"), "user content");
+        expect(
+            await runCli({
+                args: ["config", "tanstack", "--owner", "acme", "--yes"],
+                cwd,
+                logger,
+                runner: recordingRunner(),
+            }),
+        ).toBe(1);
+        expect(await Bun.file(join(cwd, "package.json")).exists()).toBeFalse();
+        expect(await Bun.file(join(cwd, "apps/web/keep.txt")).text()).toBe("user content");
+    });
+
+    test("all-template reruns preserve framework review exclusions without rewriting files", async () => {
+        const cwd = await temporaryDirectory();
+        const options = {
+            args: ["config", "convex", "tanstack", "astro", "--owner", "acme", "--yes"],
+            cwd,
+            logger,
+            runner: recordingRunner(),
+        };
+        expect(await runCli(options)).toBe(0);
+        const before = await Bun.file(join(cwd, ".coderabbit.yaml")).text();
+        const messages: string[] = [];
+        expect(
+            await runCli({
+                ...options,
+                logger: { ...logger, log: (message) => messages.push(message ?? "") },
+            }),
+        ).toBe(0);
+        expect(await Bun.file(join(cwd, ".coderabbit.yaml")).text()).toBe(before);
+        expect(messages.filter((message) => /\[(created|updated)\]/.test(message))).toEqual([]);
+    });
+
+    test("Astro alone uses web and preserves edited scaffold files on rerun", async () => {
+        const cwd = await temporaryDirectory();
+        const options = {
+            args: ["config", "astro", "--owner", "acme", "--yes"],
+            cwd,
+            logger,
+            runner: recordingRunner(),
+        };
+        expect(await runCli(options)).toBe(0);
+        expect((await Bun.file(join(cwd, "apps/web/package.json")).json()).dependencies.astro).toBe(
+            "catalog:",
+        );
+        const page = join(cwd, "apps/web/src/pages/index.astro");
+        await Bun.write(page, "<h1>My edited page</h1>\n");
+        expect(await runCli({ ...options, args: ["astro", "--yes"] })).toBe(0);
+        expect(await Bun.file(page).text()).toBe("<h1>My edited page</h1>\n");
+        expect(await Bun.file(join(cwd, "apps/static/package.json")).exists()).toBeFalse();
+    });
+
+    test("invalid owner fails before version lookups or file writes", async () => {
+        const cwd = await temporaryDirectory();
+        const calls: { command: readonly string[]; cwd: string }[] = [];
+        expect(
+            await runCli({
+                args: ["config", "--owner", "acme/other", "--yes"],
+                cwd,
+                logger,
+                runner: recordingRunner(calls),
+            }),
+        ).toBe(1);
+        expect(await readdir(cwd)).toEqual([]);
+        expect(calls.some(({ command }) => command[1] === "pm")).toBeFalse();
+    });
+
+    test("help lists templates and missing positionals fail", async () => {
+        const messages: string[] = [];
+        const helpLogger = { ...logger, log: (message?: string) => messages.push(message ?? "") };
+        expect(await runCli({ args: ["--help"], logger: helpLogger })).toBe(0);
+        expect(messages.join("\n")).toContain("config, convex, tanstack, astro");
+        expect(await runCli({ args: [], logger })).toBe(1);
     });
 });

@@ -1,0 +1,22 @@
+{
+    "name": "@repo/backend",
+    "version": "0.0.0",
+    "private": true,
+    "type": "module",
+    "scripts": {
+        "dev": "confect dev",
+        "dev:convex": "convex dev --tail-logs",
+        "codegen": "confect codegen && convex codegen",
+        "deploy": "convex deploy"
+    },
+    "devDependencies": {
+        "@repo/typescript-config": "workspace:*"
+    },
+    "dependencies": {
+        "@confect/cli": "catalog:",
+        "@confect/core": "catalog:",
+        "@confect/server": "catalog:",
+        "convex": "catalog:",
+        "effect": "catalog:"
+    }
+}

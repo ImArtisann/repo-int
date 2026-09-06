@@ -1,73 +1,113 @@
 # @artisann-studios/repo-int
 
-Public Bun CLI for applying the repository defaults used by ImArtisann.
+Public Bun CLI for scaffolding a Bun-workspaces monorepo managed by Vite+, with
+Effect tooling and Alchemy deployment stacks.
 
 ## Use
 
-Run the initializer as the first command in a new repository directory. You do
-not need to run `bun init` or `bun install` first:
+Run in a new repository directory; `bun init` is not required:
 
 ```bash
 mkdir my-repository
 cd my-repository
-bun x @artisann-studios/repo-int --yes
+bun x @artisann-studios/repo-int config convex tanstack astro --owner ImArtisann --yes
 ```
 
-The package is published on the public npm registry, so installation does not
-require registry credentials.
+Requires Bun 1.4 or newer, Node.js for the toolchain executables, and network
+access. Registry credentials are not required. Pass `--owner <login>` for the
+GitHub stack, or authenticate `gh` so repo-int can resolve your login.
 
-The same command can be run in a directory that already contains `bun init -y`
-output; repo-int migrates its TypeScript peer dependency before installing
-TypeScript-Go 7.
+| Template   | Result                                                                                                                                                                                          |
+| ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `config`   | Root Vite+ lint/format/test/task configuration, Effect TypeScript tooling, shared `@repo/typescript-config`, lefthook, CI, Dependabot, CodeRabbit, merged `.gitignore`, and `stacks/github.ts`. |
+| `convex`   | `@repo/backend` in `packages/backend`, with Convex, Confect, example notes queries/mutations, Confect-generated code, and Convex AI guidelines/skills.                                          |
+| `tanstack` | `@repo/web` in `apps/web`, with TanStack Start, React, Tailwind, and an Alchemy Cloudflare stack. Runs a build to generate the route tree.                                                      |
+| `astro`    | An Astro/Tailwind app with an Alchemy Cloudflare stack. Reuses an existing Astro app in `apps/web` or `apps/static`; otherwise takes `apps/web` when free, or `apps/static`.                    |
 
-The command:
+Templates always apply in `config → convex → tanstack → astro` order, regardless
+of argument order. TanStack reserves `apps/web` when both frontend templates are
+selected. Occupied directories containing a different app are not overwritten.
 
-- initializes Git with `main` when the directory is not already in a worktree;
-- creates or extends `.gitignore` with dependency, build, cache, log, test, and
-  environment-file patterns while preserving existing rules;
-- ignores `.env` and `.env.*` variants such as `.env.vite.prod` and
-  `.env.vite.local`, while keeping `.env.example` variants trackable;
-- installs an assertive `.coderabbit.yaml` configuration with automatic,
-  incremental reviews enabled;
-- installs native TypeScript-Go 7.0.2, the matching Oxlint type-aware backend,
-  `oxfmt`, `oxlint`, `husky`, and `lint-staged` as Bun development dependencies;
-- installs the local anti-slop Oxlint plugin under `tools/oxlint/anti-slop/` and
-  enables every anti-slop rule;
-- creates and merges the formatter, linter, and Husky scripts in `package.json`;
-- copies the managed formatter, linter, lint-staged, Husky, and Dependabot
-  configurations packaged with this initializer;
-- enables classic protection for an existing, unprotected remote `main` branch;
-  and
-- leaves existing branch protections and active rulesets unchanged.
-
-Differing managed configurations are preserved by default and prompt before
-replacement. In non-interactive environments they are also preserved. Pass
-`--yes` to replace every differing managed configuration:
+Apply `config` first, or include it in the same command as the other templates:
 
 ```bash
-bun x @artisann-studios/repo-int --yes
+bun x @artisann-studios/repo-int config --owner ImArtisann --yes
+bun x @artisann-studios/repo-int convex tanstack --yes
 ```
 
-Pass `--effect` to also install the compatible `@effect/tsgo` release, configure
-the Effect language-service plugin in `tsconfig.json`, enable the Effect tsgo
-recommended Oxlint preset, and install the Effect-focused local rules under
-`tools/oxlint/effect/`:
+All scaffold writes precede one `bun install`. Root `prepare` installs lefthook
+and patches TypeScript/Oxlint. Hooks invoke the locally installed Vite+ through
+Bun; no global `vp` installation is needed. Formatting runs before linting and
+fixed files are re-staged.
+
+## Existing repositories
+
+Managed configuration files prompt before replacement; non-interactive input
+keeps differences unless `--yes` is supplied. Scaffold app/backend files are
+create-only and are never overwritten, including with `--yes`.
+
+Existing catalog entries and package-manager settings are kept. Missing catalog
+entries, workspace globs, dependencies, and scripts are added. Conflicting
+scripts or dependencies prompt before replacement. Stable package versions use
+caret ranges; prereleases stay exact. The compatible Vite+/Effect TypeScript
+compiler and linter versions are pinned together.
+
+Existing `.gitignore` rules are preserved. CodeRabbit path filters are extended
+to exclude generated output, including the whole Confect-managed `convex/`
+directory, generated Confect code, AI files, and frontend build artifacts.
+Rerunning `config` preserves filters added by the other templates.
+
+Version 1 replaces the old flag-only initializer. `--effect` is removed: Effect
+tooling is part of `config`. Generated repositories use lefthook instead of
+Husky/lint-staged. repo-int no longer creates GitHub remotes or changes branch
+protection directly; it only initializes local Git with `main` when needed.
+Existing legacy files are not automatically removed.
+
+## After generation
 
 ```bash
-bun x @artisann-studios/repo-int --effect --yes
+bun run check
+bun run test
+bun run build
 ```
 
-Branch protection is skipped when `gh` is unavailable or unauthenticated, the
-directory has no accessible GitHub remote, `main` has not been pushed, existing
-protection cannot be inspected, or the current account lacks repository
-administration permission.
+Confect code generation runs without deployment credentials. Convex 1.45
+requires a linked deployment for its own code generation, so that step is
+explicitly skipped during scaffolding. Link the backend, then generate Convex's
+API/server definitions:
+
+```bash
+bun run --cwd packages/backend dev:convex
+bun run --cwd packages/backend codegen
+```
+
+Convex AI skill installation uses `npx`; Convex reports a warning if that
+optional skill installation is unavailable. Guidelines are still installed. A
+failed TanStack post-install build warns without aborting scaffolding; its route
+tree is regenerated by the next dev/build command.
+
+Authenticate Alchemy separately before deploying the private, squash-only GitHub
+repository and its scoped Cloudflare deployment secrets:
+
+```bash
+bun x alchemy login --profile admin
+bun run deploy:github
+```
+
+Start an app with `bun run --cwd apps/web dev` or
+`bun run --cwd apps/static dev`. Cloudflare/GitHub stack deployments require
+your credentials and are never run by repo-int.
 
 ## Develop and publish
+
+repo-int itself retains its existing Bun/Oxlint/Oxfmt/Husky toolchain:
 
 ```bash
 bun install
 bun run check
 ```
 
-Publishing a GitHub release runs `.github/workflows/publish.yml`, verifies the
-package, and publishes it to npm through trusted publishing.
+Repository tests are scoped to `src`; Confect's template `notes.spec.ts` defines
+an API contract, not a Bun test. Publishing a GitHub release runs
+`.github/workflows/publish.yml`, verifies the package, and publishes to npm
+through trusted publishing.

@@ -1,7 +1,7 @@
 {
     "name": "@artisann-studios/repo-int",
-    "version": "0.3.0",
-    "description": "Initialize a Bun repository with TypeScript-Go 7, Oxc tooling, anti-slop rules, optional Effect tooling, Husky, Dependabot, and branch protection.",
+    "version": "1.0.0",
+    "description": "Scaffold a Bun + Vite+ monorepo with Effect tooling, Alchemy stacks, Convex/Confect, TanStack Start, and Astro templates.",
     "license": "UNLICENSED",
     "repository": {
         "type": "git",
@@ -14,8 +14,10 @@
         "index.ts",
         "src/cli.ts",
         "src/configure.ts",
-        "src/github.ts",
+        "src/git.ts",
         "src/process.ts",
+        "src/templates.ts",
+        "src/versions.ts",
         "templates"
     ],
     "type": "module",
@@ -25,14 +27,14 @@
         "registry": "https://registry.npmjs.org"
     },
     "scripts": {
-        "check": "bun run typecheck && bun run format:check && bun run lint && bun test",
+        "check": "bun run typecheck && bun run format:check && bun run lint && bun run test",
         "typecheck": "tsc --noEmit",
         "format": "oxfmt --write .",
         "format:check": "oxfmt --check .",
         "lint": "oxlint . --no-error-on-unmatched-pattern",
         "lint:fix": "oxlint --fix . --no-error-on-unmatched-pattern",
         "prepare": "bunx --bun husky",
-        "test": "bun test",
+        "test": "bun test ./src",
         "publish:package": "bun publish"
     },
     "devDependencies": {
