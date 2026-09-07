@@ -4,6 +4,7 @@ import type { LoadedTemplate, PackageJsonSpec } from "./configure.ts";
 import { TOOLCHAIN } from "./versions.ts";
 
 export type TemplateName = "config" | "convex" | "ui" | "assets" | "tanstack" | "astro";
+export type UiBase = "radix" | "base";
 
 /** Canonical application order, independent of the order templates were named in. */
 export const TEMPLATE_ORDER: readonly TemplateName[] = [
@@ -23,6 +24,7 @@ export interface TemplateContext {
     owner: string;
     /** "web" for tanstack, "web" | "static" for astro, "" otherwise. */
     appDir: string;
+    uiBase?: UiBase;
 }
 
 /**
@@ -75,6 +77,8 @@ async function pathExists(path: string): Promise<boolean> {
 function templateTokens(context: TemplateContext): ReadonlyMap<string, string> {
     return new Map<string, string>([
         ["__REPO_NAME__", context.repoName],
+        ["__UI_BASE__", context.uiBase ?? "radix"],
+        ["__UI_PRIMITIVES_PACKAGE__", context.uiBase === "base" ? "@base-ui/react" : "radix-ui"],
         [
             "__ASSETS_BUCKET_NAME__",
             `${
@@ -164,9 +168,10 @@ async function loadTemplateTree(
 function catalogEntries(
     name: TemplateName,
     versions: Record<string, string>,
+    uiBase: UiBase,
 ): Record<string, string> {
     const catalog: Record<string, string> = {};
-    for (const entry of catalogSpecs(name)) {
+    for (const entry of catalogSpecs(name, uiBase)) {
         const version = versions[entry.package];
         if (version !== undefined) catalog[entry.package] = version;
     }
@@ -177,7 +182,7 @@ function catalogEntries(
  * Catalog specs per template; the CLI resolves the union across the selected
  * templates, skipping keys already present in the existing catalog.
  */
-export function catalogSpecs(name: TemplateName): readonly CatalogSpec[] {
+export function catalogSpecs(name: TemplateName, uiBase: UiBase = "radix"): readonly CatalogSpec[] {
     switch (name) {
         case "config":
             return [
@@ -207,7 +212,9 @@ export function catalogSpecs(name: TemplateName): readonly CatalogSpec[] {
                 { package: "class-variance-authority", spec: "class-variance-authority@latest" },
                 { package: "cn", spec: "cn@latest" },
                 { package: "lucide-react", spec: "lucide-react@latest" },
-                { package: "radix-ui", spec: "radix-ui@latest" },
+                uiBase === "base"
+                    ? { package: "@base-ui/react", spec: "@base-ui/react@latest" }
+                    : { package: "radix-ui", spec: "radix-ui@latest" },
                 { package: "shadcn", spec: "shadcn@latest" },
                 { package: "tw-animate-css", spec: "tw-animate-css@latest" },
                 ...TAILWIND,
@@ -248,8 +255,12 @@ export function catalogSpecs(name: TemplateName): readonly CatalogSpec[] {
     }
 }
 
-function packageJsonSpec(name: TemplateName, versions: Record<string, string>): PackageJsonSpec {
-    const catalog = catalogEntries(name, versions);
+function packageJsonSpec(
+    name: TemplateName,
+    versions: Record<string, string>,
+    uiBase: UiBase,
+): PackageJsonSpec {
+    const catalog = catalogEntries(name, versions, uiBase);
     switch (name) {
         case "config":
             return {
@@ -369,6 +380,16 @@ export async function resolveTemplate(
     const root = join(TEMPLATES_ROOT, name);
     const managed = await loadTemplateTree(join(root, "managed"), name, mapDestination, tokens);
     const scaffold = await loadTemplateTree(join(root, "scaffold"), name, mapDestination, tokens);
+    if (name === "ui") {
+        scaffold.push(
+            ...(await loadTemplateTree(
+                join(root, "variants", context.uiBase ?? "radix"),
+                name,
+                mapDestination,
+                tokens,
+            )),
+        );
+    }
     const scaffoldFiles = scaffold.map((file) => ({ ...file, createOnly: true }));
     const files = [...managed, ...scaffoldFiles].map((file) => {
         if (file.destination === ".gitignore") return { ...file, mergeIgnorePatterns: true };
@@ -378,7 +399,7 @@ export async function resolveTemplate(
     return {
         name,
         files,
-        packageJson: packageJsonSpec(name, versions),
+        packageJson: packageJsonSpec(name, versions, context.uiBase ?? "radix"),
         codeRabbitPathFilters: codeRabbitPathFilters(name, context),
         postInstall: postInstallCommands(name),
     };

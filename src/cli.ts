@@ -18,6 +18,7 @@ import {
     resolvePackageIntegration,
     type TemplateName,
     type ResolvedTemplate,
+    type UiBase,
 } from "./templates.ts";
 import { catalogRange, resolveEffectVersion, resolveVersion } from "./versions.ts";
 
@@ -32,12 +33,13 @@ export interface CliOptions {
 const HELP = `repo-int
 
 Usage:
-  bun x @artisann-studios/repo-int <template...> [--owner <login>] [--yes]
+  bun x @artisann-studios/repo-int <template...> [--ui-base radix|base] [--owner <login>] [--yes]
 
 Templates: ${TEMPLATE_ORDER.join(", ")}
 
 Options:
       --owner   GitHub owner for the config template (defaults to authenticated gh user)
+      --ui-base Shadcn primitives for the ui template: radix or base (default: existing choice, or radix)
   -y, --yes     Replace every differing managed configuration without prompting
   -h, --help    Show this help
 `;
@@ -69,10 +71,43 @@ async function hasDependency(cwd: string, name: string): Promise<boolean> {
     return isObject(pkg.dependencies) && name in pkg.dependencies;
 }
 
+async function readUiBase(directory: string): Promise<UiBase | undefined> {
+    const file = Bun.file(join(directory, "components.json"));
+    if (!(await file.exists())) return undefined;
+    const config: unknown = await file.json();
+    if (isObject(config) && typeof config.style === "string") {
+        if (config.style.startsWith("base-")) return "base";
+        if (
+            config.style.startsWith("radix-") ||
+            config.style === "new-york" ||
+            config.style === "default"
+        )
+            return "radix";
+    }
+    throw new Error(`Cannot determine the shadcn base from ${file.name}.`);
+}
+
+async function checkUiAppCompatibility(cwd: string, uiBase: UiBase): Promise<void> {
+    const appsRoot = join(cwd, "apps");
+    if (!(await pathExists(appsRoot))) return;
+    for (const app of await readdir(appsRoot, { withFileTypes: true })) {
+        if (!app.isDirectory()) continue;
+        const directory = join(appsRoot, app.name);
+        if (!(await hasDependency(directory, "@tanstack/react-start"))) continue;
+        const appBase = await readUiBase(directory);
+        if (appBase !== undefined && appBase !== uiBase) {
+            throw new Error(
+                `apps/${app.name}/components.json uses ${appBase}, but the shared UI uses ${uiBase}. Migrate the app's shadcn configuration and components before continuing.`,
+            );
+        }
+    }
+}
+
 async function integrateWorkspacePackages(
     cwd: string,
     confirm: Confirm,
     logger: Logger,
+    uiBase: UiBase,
 ): Promise<void> {
     const ui = (await readPackage(join(cwd, "packages/ui"))).name === "@repo/ui";
     const assets = (await readPackage(join(cwd, "packages/assets"))).name === "@repo/assets";
@@ -109,6 +144,7 @@ async function integrateWorkspacePackages(
                 repoName: defaultPackageName(cwd),
                 stackName: "",
                 owner: "",
+                uiBase,
             });
             for (const file of files) await synchronizeManagedFile(cwd, file, confirm, logger);
         }
@@ -158,6 +194,7 @@ export async function runCli(options: CliOptions = {}): Promise<number> {
     const logger = options.logger ?? console;
     const selected = new Set<TemplateName>();
     let ownerFlag: string | undefined;
+    let uiBaseFlag: UiBase | undefined;
     for (let index = 0; index < args.length; index++) {
         const arg = args[index];
         if (arg === undefined) break;
@@ -167,6 +204,13 @@ export async function runCli(options: CliOptions = {}): Promise<number> {
                 logger.error("--owner requires a login.");
                 return 1;
             }
+        } else if (arg === "--ui-base") {
+            const value = args[++index];
+            if (value !== "radix" && value !== "base") {
+                logger.error("--ui-base requires radix or base.");
+                return 1;
+            }
+            uiBaseFlag = value;
         } else if (["--yes", "-y", "--help", "-h"].includes(arg)) {
             continue;
         } else if (
@@ -190,6 +234,10 @@ export async function runCli(options: CliOptions = {}): Promise<number> {
     if (args.includes("--help") || args.includes("-h")) {
         logger.log(HELP);
         return 0;
+    }
+    if (uiBaseFlag !== undefined && !selected.has("ui")) {
+        logger.error("--ui-base requires the ui template.");
+        return 1;
     }
     if (selected.size === 0) {
         logger.log(HELP);
@@ -259,6 +307,15 @@ export async function runCli(options: CliOptions = {}): Promise<number> {
                 );
             }
         }
+        const existingUi = (await readPackage(join(cwd, "packages/ui"))).name === "@repo/ui";
+        const existingBase = existingUi ? await readUiBase(join(cwd, "packages/ui")) : undefined;
+        if (uiBaseFlag !== undefined && existingBase !== undefined && uiBaseFlag !== existingBase) {
+            throw new Error(
+                `packages/ui already uses ${existingBase}. Switching to ${uiBaseFlag} requires migrating its components; repo-int will not overwrite them, even with --yes.`,
+            );
+        }
+        const uiBase = uiBaseFlag ?? existingBase ?? "radix";
+        if (selected.has("ui") || existingUi) await checkUiAppCompatibility(cwd, uiBase);
         let astroDir = "";
         if (selected.has("astro")) {
             if (await hasDependency(web, "astro")) astroDir = "web";
@@ -277,7 +334,7 @@ export async function runCli(options: CliOptions = {}): Promise<number> {
         }
         const specs = new Map(
             TEMPLATE_ORDER.filter((name) => selected.has(name)).flatMap((name) =>
-                catalogSpecs(name).map((entry) => [entry.package, entry.spec] as const),
+                catalogSpecs(name, uiBase).map((entry) => [entry.package, entry.spec] as const),
             ),
         );
         logger.log(
@@ -314,6 +371,7 @@ export async function runCli(options: CliOptions = {}): Promise<number> {
                     repoName,
                     stackName,
                     owner,
+                    uiBase,
                     appDir: name === "tanstack" ? "web" : name === "astro" ? astroDir : "",
                 },
                 versions,
@@ -324,7 +382,7 @@ export async function runCli(options: CliOptions = {}): Promise<number> {
             await updatePackageJson(cwd, template.packageJson, confirm, logger);
             await mergeCodeRabbitPathFilters(cwd, template.codeRabbitPathFilters, logger);
         }
-        await integrateWorkspacePackages(cwd, confirm, logger);
+        await integrateWorkspacePackages(cwd, confirm, logger, uiBase);
         const install = [process.execPath, "install"];
         requireSuccess(install, await runner(install, { cwd, stdio: "inherit" }));
         if (selected.has("convex")) {

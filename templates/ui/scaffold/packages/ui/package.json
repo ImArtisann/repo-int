@@ -14,7 +14,7 @@
         "class-variance-authority": "catalog:",
         "cn": "catalog:",
         "lucide-react": "catalog:",
-        "radix-ui": "catalog:",
+        "__UI_PRIMITIVES_PACKAGE__": "catalog:",
         "react": "catalog:",
         "react-dom": "catalog:",
         "shadcn": "catalog:",

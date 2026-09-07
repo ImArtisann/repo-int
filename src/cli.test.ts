@@ -359,4 +359,79 @@ describe("template CLI", () => {
         const example = parseEnv(await Bun.file(join(cwd, "packages/assets/.env.example")).text());
         expect(example.ASSETS_BUCKET_NAME).toBe(bucket);
     });
+
+    test("Base UI is retained when adding an app later and rerunning without a base flag", async () => {
+        const cwd = await temporaryDirectory();
+        const options = { cwd, logger, runner: recordingRunner() };
+        expect(
+            await runCli({
+                ...options,
+                args: ["config", "ui", "--ui-base", "base", "--owner", "acme"],
+            }),
+        ).toBe(0);
+        const button = join(cwd, "packages/ui/src/components/button.tsx");
+        await Bun.write(button, "export const customizedButton = true;\n");
+        expect(await runCli({ ...options, args: ["ui", "tanstack", "--yes"] })).toBe(0);
+        const ui = await Bun.file(join(cwd, "packages/ui/package.json")).json();
+        const root = await Bun.file(join(cwd, "package.json")).json();
+        expect(ui.dependencies["@base-ui/react"]).toBe("catalog:");
+        expect(ui.dependencies["radix-ui"]).toBeUndefined();
+        expect(root.catalog["@base-ui/react"]).toBe("^1.2.3");
+        expect(root.catalog["radix-ui"]).toBeUndefined();
+        expect((await Bun.file(join(cwd, "packages/ui/components.json")).json()).style).toBe(
+            "base-nova",
+        );
+        expect((await Bun.file(join(cwd, "apps/web/components.json")).json()).style).toBe(
+            "base-nova",
+        );
+        expect(await Bun.file(button).text()).toBe("export const customizedButton = true;\n");
+    });
+
+    test("changing an existing UI base is rejected even with yes", async () => {
+        const cwd = await temporaryDirectory();
+        const options = { cwd, logger, runner: recordingRunner() };
+        expect(
+            await runCli({
+                ...options,
+                args: ["config", "ui", "--ui-base", "radix", "--owner", "acme"],
+            }),
+        ).toBe(0);
+        const before = await Bun.file(join(cwd, "package.json")).text();
+        expect(await runCli({ ...options, args: ["ui", "--ui-base", "base", "--yes"] })).toBe(1);
+        expect(await Bun.file(join(cwd, "package.json")).text()).toBe(before);
+        expect((await Bun.file(join(cwd, "packages/ui/components.json")).json()).style).toBe(
+            "radix-nova",
+        );
+        const ui = await Bun.file(join(cwd, "packages/ui/package.json")).json();
+        expect(ui.dependencies["radix-ui"]).toBe("catalog:");
+        expect(ui.dependencies["@base-ui/react"]).toBeUndefined();
+    });
+
+    test("a conflicting app configuration prevents creation of a mismatched UI package", async () => {
+        const cwd = await temporaryDirectory();
+        const options = { cwd, logger, runner: recordingRunner() };
+        expect(await runCli({ ...options, args: ["config", "tanstack", "--owner", "acme"] })).toBe(
+            0,
+        );
+        await Bun.write(join(cwd, "apps/web/components.json"), '{"style":"radix-nova"}');
+        const before = await Bun.file(join(cwd, "package.json")).text();
+        expect(await runCli({ ...options, args: ["ui", "--ui-base", "base", "--yes"] })).toBe(1);
+        expect(await Bun.file(join(cwd, "packages/ui/package.json")).exists()).toBeFalse();
+        expect(await Bun.file(join(cwd, "package.json")).text()).toBe(before);
+    });
+
+    test("invalid or unrelated UI base flags fail before creating files or executing commands", async () => {
+        const cwd = await temporaryDirectory();
+        const calls: { command: readonly string[]; cwd: string }[] = [];
+        const options = {
+            cwd,
+            logger,
+            runner: recordingRunner(calls),
+        };
+        expect(await runCli({ ...options, args: ["ui", "--ui-base", "invalid"] })).toBe(1);
+        expect(await runCli({ ...options, args: ["ui", "--ui-base"] })).toBe(1);
+        expect(await runCli({ ...options, args: ["config", "--ui-base", "base"] })).toBe(1);
+        expect(await readdir(cwd)).toEqual([]);
+        expect(calls).toEqual([]);
+    });
 });

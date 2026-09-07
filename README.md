@@ -115,12 +115,21 @@ your credentials and are never run by repo-int.
 ### Shared shadcn UI
 
 ```bash
-bun x @artisann-studios/repo-int ui --yes
+# Choose one primitive library for a new UI package.
+bun x @artisann-studios/repo-int ui --ui-base radix --yes
+bun x @artisann-studios/repo-int ui --ui-base base --yes
+
+# Add components after creating the package and app.
 bun x --bun shadcn@latest add input --cwd apps/web
 ```
 
+`--ui-base radix` uses Radix UI and the `radix-nova` style. `--ui-base base`
+uses Base UI and the `base-nova` style. Only the selected primitive dependency
+is added. Omit the flag to retain an existing package's choice, or use Radix for
+a new package. The flag requires the `ui` template.
+
 Both `packages/ui/components.json` and the TanStack app's `components.json` use
-the Radix Nova preset, neutral colors, Lucide icons, and Tailwind v4.
+the selected Nova style, neutral colors, Lucide icons, and Tailwind v4.
 Components, hooks, utilities, and the theme live under `packages/ui/src`. Adding
 a shared component from the app routes it to the UI package:
 
@@ -132,6 +141,14 @@ import { useIsMobile } from "@repo/ui/hooks/use-mobile";
 With no app yet, run shadcn with `--cwd packages/ui`. Astro apps are not
 converted to React; using shadcn there requires a separate Astro React
 integration.
+
+The selected Button API follows shadcn: Radix uses `asChild`; Base UI uses
+`render` and, for non-button elements, `nativeButton={false}`.
+
+Reruns do not switch an existing package's base, even with `--yes`. Changing
+primitive libraries requires migrating existing components first. Conflicting
+app and package bases are rejected before scaffold files are written. Apps added
+later inherit the shared package's choice without repeating the flag.
 
 ### R2 images and Unpic
 
