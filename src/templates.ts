@@ -3,10 +3,17 @@ import { join } from "node:path";
 import type { LoadedTemplate, PackageJsonSpec } from "./configure.ts";
 import { TOOLCHAIN } from "./versions.ts";
 
-export type TemplateName = "config" | "convex" | "tanstack" | "astro";
+export type TemplateName = "config" | "convex" | "ui" | "assets" | "tanstack" | "astro";
 
 /** Canonical application order, independent of the order templates were named in. */
-export const TEMPLATE_ORDER: readonly TemplateName[] = ["config", "convex", "tanstack", "astro"];
+export const TEMPLATE_ORDER: readonly TemplateName[] = [
+    "config",
+    "convex",
+    "ui",
+    "assets",
+    "tanstack",
+    "astro",
+];
 
 export interface TemplateContext {
     cwd: string;
@@ -68,6 +75,16 @@ async function pathExists(path: string): Promise<boolean> {
 function templateTokens(context: TemplateContext): ReadonlyMap<string, string> {
     return new Map<string, string>([
         ["__REPO_NAME__", context.repoName],
+        [
+            "__ASSETS_BUCKET_NAME__",
+            `${
+                context.repoName
+                    .toLowerCase()
+                    .replace(/[^a-z0-9-]/g, "-")
+                    .replace(/^-+/, "")
+                    .slice(0, 56) || "repo"
+            }-assets`,
+        ],
         ["__STACK_NAME__", context.stackName],
         ["__OWNER__", context.owner],
         ["__APP_DIR__", context.appDir],
@@ -177,6 +194,34 @@ export function catalogSpecs(name: TemplateName): readonly CatalogSpec[] {
                 { package: "@confect/cli", spec: "@confect/cli@next" },
                 { package: "@confect/react", spec: "@confect/react@next" },
             ];
+        case "ui":
+            return [
+                { package: "react", spec: "react@latest" },
+                { package: "react-dom", spec: "react-dom@latest" },
+                { package: "@types/react", spec: "@types/react@latest" },
+                { package: "@types/react-dom", spec: "@types/react-dom@latest" },
+                {
+                    package: "@fontsource-variable/geist",
+                    spec: "@fontsource-variable/geist@latest",
+                },
+                { package: "class-variance-authority", spec: "class-variance-authority@latest" },
+                { package: "cn", spec: "cn@latest" },
+                { package: "lucide-react", spec: "lucide-react@latest" },
+                { package: "radix-ui", spec: "radix-ui@latest" },
+                { package: "shadcn", spec: "shadcn@latest" },
+                { package: "tw-animate-css", spec: "tw-animate-css@latest" },
+                ...TAILWIND,
+            ];
+        case "assets":
+            return [
+                ALCHEMY,
+                EFFECT,
+                { package: "@types/bun", spec: "@types/bun@latest" },
+                { package: "aws4fetch", spec: "aws4fetch@latest" },
+                { package: "image-size", spec: "image-size@latest" },
+                { package: "@unpic/react", spec: "@unpic/react@latest" },
+                { package: "@unpic/astro", spec: "@unpic/astro@latest" },
+            ];
         case "tanstack":
             return [
                 ALCHEMY,
@@ -231,6 +276,8 @@ function packageJsonSpec(name: TemplateName, versions: Record<string, string>): 
                 },
             };
         case "convex":
+        case "ui":
+        case "assets":
         case "tanstack":
         case "astro":
             return { catalog };
@@ -258,6 +305,10 @@ function codeRabbitPathFilters(name: TemplateName, context: TemplateContext): re
                 "!packages/backend/.agents/**",
                 "!packages/backend/skills-lock.json",
             ];
+        case "ui":
+            return [];
+        case "assets":
+            return ["!packages/assets/src/manifest.gen.ts", "!packages/assets/.alchemy/**"];
         case "tanstack":
             return [
                 "!apps/web/src/routeTree.gen.ts",
@@ -280,6 +331,8 @@ function postInstallCommands(name: TemplateName): readonly PostInstallCommand[] 
     switch (name) {
         case "config":
         case "astro":
+        case "ui":
+        case "assets":
             return [];
         case "convex":
             return [
@@ -329,4 +382,19 @@ export async function resolveTemplate(
         codeRabbitPathFilters: codeRabbitPathFilters(name, context),
         postInstall: postInstallCommands(name),
     };
+}
+
+export async function resolvePackageIntegration(
+    name: "ui" | "assets",
+    framework: "tanstack" | "astro",
+    context: TemplateContext,
+): Promise<LoadedTemplate[]> {
+    const tokens = templateTokens(context);
+    const files = await loadTemplateTree(
+        join(TEMPLATES_ROOT, name, "integrations", framework),
+        name,
+        (source) => mapDestinationPath(source, tokens),
+        tokens,
+    );
+    return files.map((file) => ({ ...file, createOnly: true }));
 }

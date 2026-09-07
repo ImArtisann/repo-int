@@ -35,6 +35,7 @@ export interface PackageJsonSpec {
     dependencies?: Readonly<Record<string, string>>;
     devDependencies?: Readonly<Record<string, string>>;
     scripts?: Readonly<Record<string, string>>;
+    imports?: Readonly<Record<string, string>>;
 }
 
 async function fileExists(path: string): Promise<boolean> {
@@ -341,6 +342,7 @@ const PACKAGE_JSON_ENTRY_LABELS = {
     dependencies: "dependency",
     devDependencies: "devDependency",
     scripts: "script",
+    imports: "import",
 } as const;
 
 type PackageJsonEntryField = keyof typeof PACKAGE_JSON_ENTRY_LABELS;
@@ -430,7 +432,7 @@ export async function updatePackageJson(
     if (desired.catalog !== undefined) {
         changed = mergeCatalog(path, packageJson, desired.catalog) || changed;
     }
-    for (const field of ["dependencies", "devDependencies", "scripts"] as const) {
+    for (const field of ["dependencies", "devDependencies", "scripts", "imports"] as const) {
         const entries = desired[field];
         if (entries === undefined) continue;
         changed =

@@ -1,5 +1,5 @@
 import { createInterface } from "node:readline/promises";
-import { stat } from "node:fs/promises";
+import { readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import {
     defaultPackageName,
@@ -15,6 +15,7 @@ import {
     TEMPLATE_ORDER,
     catalogSpecs,
     resolveTemplate,
+    resolvePackageIntegration,
     type TemplateName,
     type ResolvedTemplate,
 } from "./templates.ts";
@@ -33,7 +34,7 @@ const HELP = `repo-int
 Usage:
   bun x @artisann-studios/repo-int <template...> [--owner <login>] [--yes]
 
-Templates: config, convex, tanstack, astro
+Templates: ${TEMPLATE_ORDER.join(", ")}
 
 Options:
       --owner   GitHub owner for the config template (defaults to authenticated gh user)
@@ -68,6 +69,76 @@ async function hasDependency(cwd: string, name: string): Promise<boolean> {
     return isObject(pkg.dependencies) && name in pkg.dependencies;
 }
 
+async function integrateWorkspacePackages(
+    cwd: string,
+    confirm: Confirm,
+    logger: Logger,
+): Promise<void> {
+    const ui = (await readPackage(join(cwd, "packages/ui"))).name === "@repo/ui";
+    const assets = (await readPackage(join(cwd, "packages/assets"))).name === "@repo/assets";
+    if ((!ui && !assets) || !(await pathExists(join(cwd, "apps")))) return;
+    const apps = await readdir(join(cwd, "apps"), { withFileTypes: true });
+    for (const app of apps.toSorted((left, right) => left.name.localeCompare(right.name))) {
+        if (!app.isDirectory()) continue;
+        const appRoot = join(cwd, "apps", app.name);
+        const pkg = await readPackage(appRoot);
+        if (!isObject(pkg.dependencies)) continue;
+        const framework =
+            "@tanstack/react-start" in pkg.dependencies
+                ? "tanstack"
+                : "astro" in pkg.dependencies
+                  ? "astro"
+                  : undefined;
+        if (!framework) continue;
+        const dependencies: Record<string, string> = {};
+        const packages: ("ui" | "assets")[] = [];
+        if (ui && framework === "tanstack") {
+            packages.push("ui");
+            dependencies["@repo/ui"] = "workspace:*";
+        }
+        if (assets) {
+            packages.push("assets");
+            dependencies["@repo/assets"] = "workspace:*";
+            dependencies[framework === "tanstack" ? "@unpic/react" : "@unpic/astro"] = "catalog:";
+        }
+        if (packages.length === 0) continue;
+        for (const name of packages) {
+            const files = await resolvePackageIntegration(name, framework, {
+                cwd,
+                appDir: app.name,
+                repoName: defaultPackageName(cwd),
+                stackName: "",
+                owner: "",
+            });
+            for (const file of files) await synchronizeManagedFile(cwd, file, confirm, logger);
+        }
+        await updatePackageJson(
+            appRoot,
+            ui && framework === "tanstack"
+                ? {
+                      dependencies,
+                      imports: {
+                          "#components/*": "./src/components/*.tsx",
+                          "#lib/*": "./src/lib/*.ts",
+                      },
+                  }
+                : { dependencies },
+            confirm,
+            logger,
+        );
+        if (ui && framework === "tanstack") {
+            const stylesheet = Bun.file(join(appRoot, "src/styles.css"));
+            const content = (await stylesheet.exists()) ? await stylesheet.text() : "";
+            const importRule = '@import "@repo/ui/styles/globals.css";';
+            if (!/@import\s+["']@repo\/ui\/styles\/globals\.css["']/.test(content)) {
+                const localStyles = content.replace(/^@import\s+["']tailwindcss["'];\r?\n?/gm, "");
+                await Bun.write(stylesheet, `${importRule}\n${localStyles}`);
+                logger.log(`[updated] apps/${app.name}/src/styles.css (shared UI import)`);
+            }
+        }
+    }
+}
+
 function existingCatalog(pkg: Record<string, unknown>): Record<string, string> {
     const parent = isObject(pkg.workspaces) && "catalog" in pkg.workspaces ? pkg.workspaces : pkg;
     if (!("catalog" in parent)) return {};
@@ -98,13 +169,20 @@ export async function runCli(options: CliOptions = {}): Promise<number> {
             }
         } else if (["--yes", "-y", "--help", "-h"].includes(arg)) {
             continue;
-        } else if (arg === "config" || arg === "convex" || arg === "tanstack" || arg === "astro") {
+        } else if (
+            arg === "config" ||
+            arg === "convex" ||
+            arg === "ui" ||
+            arg === "assets" ||
+            arg === "tanstack" ||
+            arg === "astro"
+        ) {
             selected.add(arg);
         } else {
             logger.error(
                 arg.startsWith("-")
                     ? `Unknown option: ${arg}\n\n${HELP}`
-                    : `Unknown template "${arg}". Expected: config, convex, tanstack, astro.`,
+                    : `Unknown template "${arg}". Expected: ${TEMPLATE_ORDER.join(", ")}.`,
             );
             return 1;
         }
@@ -168,6 +246,18 @@ export async function runCli(options: CliOptions = {}): Promise<number> {
             throw new Error(
                 "apps/web exists and is not a TanStack Start app; move it before running the tanstack template.",
             );
+        }
+        for (const name of ["ui", "assets"] as const) {
+            if (!selected.has(name)) continue;
+            const directory = join(cwd, "packages", name);
+            if (
+                (await pathExists(directory)) &&
+                (await readPackage(directory)).name !== `@repo/${name}`
+            ) {
+                throw new Error(
+                    `packages/${name} exists and is not @repo/${name}; move it before running the ${name} template.`,
+                );
+            }
         }
         let astroDir = "";
         if (selected.has("astro")) {
@@ -234,6 +324,7 @@ export async function runCli(options: CliOptions = {}): Promise<number> {
             await updatePackageJson(cwd, template.packageJson, confirm, logger);
             await mergeCodeRabbitPathFilters(cwd, template.codeRabbitPathFilters, logger);
         }
+        await integrateWorkspacePackages(cwd, confirm, logger);
         const install = [process.execPath, "install"];
         requireSuccess(install, await runner(install, { cwd, stdio: "inherit" }));
         if (selected.has("convex")) {
@@ -261,6 +352,12 @@ export async function runCli(options: CliOptions = {}): Promise<number> {
             logger.log("Next: bun run --cwd packages/backend dev:convex to link a deployment");
         if (selected.has("tanstack")) logger.log("Next: bun run --cwd apps/web dev");
         if (selected.has("astro")) logger.log(`Next: bun run --cwd apps/${astroDir} dev`);
+        if (selected.has("ui"))
+            logger.log("Next: bun x --bun shadcn@latest add input --cwd packages/ui");
+        if (selected.has("assets"))
+            logger.log(
+                "Next: configure packages/assets/.env, generate the image manifest, then deploy and upload assets",
+            );
         logger.log("Repository initialization complete.");
         return 0;
     } catch (error) {

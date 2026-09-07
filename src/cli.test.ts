@@ -257,11 +257,106 @@ describe("template CLI", () => {
         expect(calls.some(({ command }) => command[1] === "pm")).toBeFalse();
     });
 
-    test("help lists templates and missing positionals fail", async () => {
-        const messages: string[] = [];
-        const helpLogger = { ...logger, log: (message?: string) => messages.push(message ?? "") };
-        expect(await runCli({ args: ["--help"], logger: helpLogger })).toBe(0);
-        expect(messages.join("\n")).toContain("config, convex, tanstack, astro");
+    test("help succeeds without initializing a repository and missing positionals fail", async () => {
+        expect(
+            await runCli({
+                args: ["--help"],
+                logger,
+                runner: async () => {
+                    throw new Error("Help must not execute commands");
+                },
+            }),
+        ).toBe(0);
         expect(await runCli({ args: [], logger })).toBe(1);
+    });
+
+    test("packages added before apps integrate both frontend frameworks", async () => {
+        const cwd = await temporaryDirectory();
+        const options = { cwd, logger, runner: recordingRunner() };
+        expect(
+            await runCli({ ...options, args: ["assets", "ui", "config", "--owner", "acme"] }),
+        ).toBe(0);
+        expect(await runCli({ ...options, args: ["astro", "tanstack"] })).toBe(0);
+        const web = await Bun.file(join(cwd, "apps/web/package.json")).json();
+        const astro = await Bun.file(join(cwd, "apps/static/package.json")).json();
+        expect(web.dependencies).toMatchObject({
+            "@repo/ui": "workspace:*",
+            "@repo/assets": "workspace:*",
+            "@unpic/react": "catalog:",
+        });
+        expect(astro.dependencies).toMatchObject({
+            "@repo/assets": "workspace:*",
+            "@unpic/astro": "catalog:",
+        });
+        expect(astro.dependencies["@repo/ui"]).toBeUndefined();
+        expect(
+            await Bun.file(join(cwd, "apps/web/src/components/AssetImage.tsx")).exists(),
+        ).toBeTrue();
+        expect(
+            await Bun.file(join(cwd, "apps/static/src/components/AssetImage.astro")).exists(),
+        ).toBeTrue();
+    });
+
+    test("adding packages to an existing app preserves edits and integrates only once", async () => {
+        const cwd = await temporaryDirectory();
+        const options = { cwd, logger, runner: recordingRunner() };
+        expect(await runCli({ ...options, args: ["config", "tanstack", "--owner", "acme"] })).toBe(
+            0,
+        );
+        const stylesheet = join(cwd, "apps/web/src/styles.css");
+        const route = join(cwd, "apps/web/src/routes/index.tsx");
+        const customCss = '@import "tailwindcss";\n.brand { color: red; }\n';
+        await Bun.write(stylesheet, customCss);
+        await Bun.write(route, "export const customRoute = true;\n");
+        expect(await runCli({ ...options, args: ["ui", "assets"] })).toBe(0);
+        const integratedCss = await Bun.file(stylesheet).text();
+        expect(integratedCss).toBe(
+            '@import "@repo/ui/styles/globals.css";\n.brand { color: red; }\n',
+        );
+        const image = join(cwd, "apps/web/src/components/AssetImage.tsx");
+        await Bun.write(image, "export const customImage = true;\n");
+        expect(await runCli({ ...options, args: ["assets", "ui", "--yes"] })).toBe(0);
+        expect(await Bun.file(stylesheet).text()).toBe(integratedCss);
+        expect(await Bun.file(route).text()).toBe("export const customRoute = true;\n");
+        expect(await Bun.file(image).text()).toBe("export const customImage = true;\n");
+    });
+
+    test("occupied package directories fail before scaffolding", async () => {
+        const cwd = await temporaryDirectory();
+        await mkdir(join(cwd, "packages/assets"), { recursive: true });
+        await Bun.write(join(cwd, "packages/assets/package.json"), '{"name":"my-assets"}');
+        expect(
+            await runCli({
+                args: ["config", "assets", "--owner", "acme", "--yes"],
+                cwd,
+                logger,
+                runner: recordingRunner(),
+            }),
+        ).toBe(1);
+        expect(await Bun.file(join(cwd, "package.json")).exists()).toBeFalse();
+        expect(await Bun.file(join(cwd, "packages/assets/package.json")).text()).toBe(
+            '{"name":"my-assets"}',
+        );
+    });
+
+    test("asset bucket defaults satisfy R2 naming limits for long npm-compatible names", async () => {
+        const cwd = join(await temporaryDirectory(), `My.Project__${"x".repeat(70)}`);
+        await mkdir(cwd);
+        expect(
+            await runCli({
+                args: ["config", "assets", "--owner", "acme"],
+                cwd,
+                logger,
+                runner: recordingRunner(),
+            }),
+        ).toBe(0);
+        const { DEFAULT_ASSETS_BUCKET_NAME: bucket } = await import(
+            join(cwd, "packages/assets/src/config.ts")
+        );
+        expect(bucket).toHaveLength(63);
+        expect(bucket).toMatch(/^[a-z0-9][a-z0-9-]*-assets$/);
+        const { parseEnv } = await import("node:util");
+        const example = parseEnv(await Bun.file(join(cwd, "packages/assets/.env.example")).text());
+        expect(example.ASSETS_BUCKET_NAME).toBe(bucket);
     });
 });
