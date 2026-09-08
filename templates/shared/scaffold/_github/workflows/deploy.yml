@@ -1,0 +1,43 @@
+name: Deploy
+
+on:
+    push:
+        branches: [main]
+
+# Do not interrupt an active production deployment.
+concurrency:
+    group: deploy-production
+    cancel-in-progress: false
+
+jobs:
+    deploy:
+        runs-on: ubuntu-latest
+        permissions:
+            contents: read
+        env:
+            # Provision once with `bun run deploy:github`.
+            CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+            CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        steps:
+            - uses: actions/checkout@v6
+            - uses: oven-sh/setup-bun@v2
+            - uses: actions/setup-node@v6
+              with:
+                  node-version: 24
+            - run: bun install --frozen-lockfile
+            # GitHub administration and R2 provisioning remain manual.
+            - name: Deploy application stacks
+              shell: bash
+              run: |
+                  shopt -s nullglob
+                  stacks=(apps/*/alchemy.run.ts)
+                  if [ ${#stacks[@]} -eq 0 ]; then
+                      echo "No apps/*/alchemy.run.ts stacks found; nothing to deploy."
+                      exit 0
+                  fi
+                  for stack in "${stacks[@]}"; do
+                      app="${stack%/alchemy.run.ts}"
+                      echo "::group::alchemy deploy ${app}"
+                      bun run --cwd "${app}" deploy --stage prod --yes
+                      echo "::endgroup::"
+                  done

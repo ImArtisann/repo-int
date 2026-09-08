@@ -1,6 +1,6 @@
 import { createInterface } from "node:readline/promises";
 import { readdir, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import {
     defaultPackageName,
     synchronizeManagedFile,
@@ -27,17 +27,22 @@ export interface CliOptions {
     confirm?: Confirm;
     cwd?: string;
     logger?: Logger;
+    prompt?: Prompt;
     runner?: CommandRunner;
 }
+
+/** Free-form question; the answer is trimmed by the caller. */
+export type Prompt = (question: string) => Promise<string>;
 
 const HELP = `repo-int
 
 Usage:
-  bun x @artisann-studios/repo-int <template...> [--ui-base radix|base] [--owner <login>] [--yes]
+  bun x @artisann-studios/repo-int <template...> [--ui-base radix|base] [--app-dir <name>] [--owner <login>] [--yes]
 
 Templates: ${TEMPLATE_ORDER.join(", ")}
 
 Options:
+      --app-dir Directory under apps/ for the tanstack template (default: web)
       --owner   GitHub owner for the config template (defaults to authenticated gh user)
       --ui-base Shadcn primitives for the ui template: radix or base (default: existing choice, or radix)
   -y, --yes     Replace every differing managed configuration without prompting
@@ -69,6 +74,93 @@ async function pathExists(path: string): Promise<boolean> {
 async function hasDependency(cwd: string, name: string): Promise<boolean> {
     const pkg = await readPackage(cwd);
     return isObject(pkg.dependencies) && name in pkg.dependencies;
+}
+
+/**
+ * Walks up from the invocation directory so `repo-int convex` inside apps/web
+ * configures the workspace instead of nesting a second one. The search never
+ * leaves the enclosing Git repository, and an unconfigured tree keeps its own
+ * directory as the root. A malformed package.json is not a root here; the
+ * invocation directory is revalidated later with its original error.
+ */
+async function findWorkspaceRoot(cwd: string): Promise<string> {
+    let directory = resolve(cwd);
+    for (;;) {
+        if (await Bun.file(join(directory, "vite.config.ts")).exists()) {
+            try {
+                if ("workspaces" in (await readPackage(directory))) return directory;
+            } catch {
+                /* not a usable workspace root */
+            }
+        }
+        const parent = dirname(directory);
+        if (parent === directory || (await pathExists(join(directory, ".git")))) return cwd;
+        directory = parent;
+    }
+}
+
+/** Rejects traversal, absolute paths, and anything that is not one plain segment. */
+function appDirIssue(value: string): string | undefined {
+    if (value === "") return "an application directory name is required.";
+    if (value.length > 64) return `"${value}" is longer than 64 characters.`;
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(value))
+        return `"${value}" must be a single directory name under apps/ using letters, digits, ".", "_", or "-".`;
+    return undefined;
+}
+
+/** True when apps/<name> is free or already holds a TanStack Start app. */
+async function isTanStackAppDir(cwd: string, name: string): Promise<boolean> {
+    const directory = join(cwd, "apps", name);
+    if (!(await pathExists(directory))) return true;
+    return await hasDependency(directory, "@tanstack/react-start");
+}
+
+/**
+ * apps/web is the default; when something else already owns it the caller must
+ * name another directory. Neither --yes nor a plain rerun ever overwrites the
+ * occupant.
+ */
+async function resolveTanStackAppDir(
+    cwd: string,
+    flag: string | undefined,
+    prompt: Prompt | undefined,
+    logger: Logger,
+): Promise<string> {
+    if (flag !== undefined) {
+        const issue = appDirIssue(flag);
+        if (issue) throw new Error(`--app-dir ${issue}`);
+        if (!(await isTanStackAppDir(cwd, flag)))
+            throw new Error(
+                `apps/${flag} exists and is not a TanStack Start app; pass --app-dir with a free directory name.`,
+            );
+        return flag;
+    }
+    if (await isTanStackAppDir(cwd, "web")) return "web";
+    if (!prompt)
+        throw new Error(
+            "apps/web exists and is not a TanStack Start app; pass --app-dir <name> to scaffold the app in another directory under apps/.",
+        );
+    for (;;) {
+        const answer = (
+            await prompt(
+                "apps/web is taken. Directory name for the TanStack app under apps/ (empty to cancel):",
+            )
+        ).trim();
+        if (answer === "") break;
+        const issue = appDirIssue(answer);
+        if (issue) {
+            logger.warn(`[rejected] ${issue}`);
+            continue;
+        }
+        if (!(await isTanStackAppDir(cwd, answer))) {
+            logger.warn(`[rejected] apps/${answer} exists and is not a TanStack Start app.`);
+            continue;
+        }
+        return answer;
+    }
+    throw new Error(
+        "No TanStack application directory was chosen; rerun with --app-dir <name> to scaffold the app under apps/.",
+    );
 }
 
 async function readUiBase(directory: string): Promise<UiBase | undefined> {
@@ -195,6 +287,7 @@ export async function runCli(options: CliOptions = {}): Promise<number> {
     const selected = new Set<TemplateName>();
     let ownerFlag: string | undefined;
     let uiBaseFlag: UiBase | undefined;
+    let appDirFlag: string | undefined;
     for (let index = 0; index < args.length; index++) {
         const arg = args[index];
         if (arg === undefined) break;
@@ -202,6 +295,12 @@ export async function runCli(options: CliOptions = {}): Promise<number> {
             ownerFlag = args[++index];
             if (!ownerFlag || ownerFlag.startsWith("-")) {
                 logger.error("--owner requires a login.");
+                return 1;
+            }
+        } else if (arg === "--app-dir") {
+            appDirFlag = args[++index];
+            if (!appDirFlag || appDirFlag.startsWith("-")) {
+                logger.error("--app-dir requires a directory name.");
                 return 1;
             }
         } else if (arg === "--ui-base") {
@@ -239,19 +338,26 @@ export async function runCli(options: CliOptions = {}): Promise<number> {
         logger.error("--ui-base requires the ui template.");
         return 1;
     }
+    if (appDirFlag !== undefined && !selected.has("tanstack")) {
+        logger.error("--app-dir requires the tanstack template.");
+        return 1;
+    }
     if (selected.size === 0) {
         logger.log(HELP);
         return 1;
     }
 
-    const cwd = options.cwd ?? process.cwd();
     const runner = options.runner ?? runCommand;
     const assumeYes = args.includes("--yes") || args.includes("-y");
     const interactive = process.stdin.isTTY && process.stdout.isTTY;
     const readline =
-        !options.confirm && interactive
+        interactive && (!options.confirm || !options.prompt)
             ? createInterface({ input: process.stdin, output: process.stdout })
             : undefined;
+    // A directory name is never a destructive answer, so --yes still asks.
+    const prompt: Prompt | undefined =
+        options.prompt ??
+        (readline ? async (question) => await readline.question(`${question} `) : undefined);
     const confirm: Confirm =
         options.confirm ??
         (assumeYes
@@ -269,6 +375,9 @@ export async function runCli(options: CliOptions = {}): Promise<number> {
                 });
 
     try {
+        const invokedFrom = options.cwd ?? process.cwd();
+        const cwd = await findWorkspaceRoot(invokedFrom);
+        if (cwd !== invokedFrom) logger.log(`Found the repo-int workspace at ${cwd}`);
         logger.log(`Initializing ${cwd}`);
         await initializeGitRepository(cwd, runner, logger);
         const pkg = await readPackage(cwd);
@@ -286,15 +395,9 @@ export async function runCli(options: CliOptions = {}): Promise<number> {
         const web = join(cwd, "apps/web");
         const staticApp = join(cwd, "apps/static");
         const webExists = await pathExists(web);
-        if (
-            selected.has("tanstack") &&
-            webExists &&
-            !(await hasDependency(web, "@tanstack/react-start"))
-        ) {
-            throw new Error(
-                "apps/web exists and is not a TanStack Start app; move it before running the tanstack template.",
-            );
-        }
+        const tanstackDir = selected.has("tanstack")
+            ? await resolveTanStackAppDir(cwd, appDirFlag, prompt, logger)
+            : "";
         for (const name of ["ui", "assets"] as const) {
             if (!selected.has(name)) continue;
             const directory = join(cwd, "packages", name);
@@ -321,10 +424,13 @@ export async function runCli(options: CliOptions = {}): Promise<number> {
             if (await hasDependency(web, "astro")) astroDir = "web";
             else if (await hasDependency(staticApp, "astro")) astroDir = "static";
             else if (!webExists && !selected.has("tanstack")) astroDir = "web";
-            else if (!(await pathExists(staticApp))) astroDir = "static";
+            else if (tanstackDir !== "static" && !(await pathExists(staticApp)))
+                astroDir = "static";
             else
                 throw new Error(
-                    "apps/web and apps/static are both taken; move one before running the astro template.",
+                    tanstackDir === "static"
+                        ? "apps/static is reserved for the TanStack app; choose another --app-dir before running the astro template."
+                        : "apps/web and apps/static are both taken; move one before running the astro template.",
                 );
         }
         const versions = existingCatalog(pkg);
@@ -372,7 +478,7 @@ export async function runCli(options: CliOptions = {}): Promise<number> {
                     stackName,
                     owner,
                     uiBase,
-                    appDir: name === "tanstack" ? "web" : name === "astro" ? astroDir : "",
+                    appDir: name === "tanstack" ? tanstackDir : name === "astro" ? astroDir : "",
                 },
                 versions,
             );
@@ -399,7 +505,7 @@ export async function runCli(options: CliOptions = {}): Promise<number> {
                 });
                 if (template.name === "tanstack" && result.exitCode !== 0) {
                     logger.warn(
-                        "[skipped] TanStack build failed; run `bun run --cwd apps/web dev` to regenerate the route tree.",
+                        `[skipped] TanStack build failed; run \`bun run --cwd apps/${tanstackDir} dev\` to regenerate the route tree.`,
                     );
                 } else requireSuccess(step.command, result);
             }
@@ -408,7 +514,7 @@ export async function runCli(options: CliOptions = {}): Promise<number> {
             logger.log("Next: alchemy login --profile admin, then bun run deploy:github");
         if (selected.has("convex"))
             logger.log("Next: bun run --cwd packages/backend dev:convex to link a deployment");
-        if (selected.has("tanstack")) logger.log("Next: bun run --cwd apps/web dev");
+        if (selected.has("tanstack")) logger.log(`Next: bun run --cwd apps/${tanstackDir} dev`);
         if (selected.has("astro")) logger.log(`Next: bun run --cwd apps/${astroDir} dev`);
         if (selected.has("ui"))
             logger.log("Next: bun x --bun shadcn@latest add input --cwd packages/ui");

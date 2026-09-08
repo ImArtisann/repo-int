@@ -1,6 +1,6 @@
 {
     "name": "@artisann-studios/repo-int",
-    "version": "1.2.0",
+    "version": "1.3.0",
     "description": "Scaffold a Bun + Vite+ monorepo with Effect tooling, Alchemy stacks, Convex/Confect, shadcn UI, R2 assets, TanStack Start, and Astro templates.",
     "license": "UNLICENSED",
     "repository": {

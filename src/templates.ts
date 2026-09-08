@@ -22,7 +22,10 @@ export interface TemplateContext {
     stackName: string;
     /** GitHub owner; only the config template consumes it. */
     owner: string;
-    /** "web" for tanstack, "web" | "static" for astro, "" otherwise. */
+    /**
+     * Application directory under `apps/` for the tanstack and astro templates
+     * (`web` by default); "" for templates that do not generate an app.
+     */
     appDir: string;
     uiBase?: UiBase;
 }
@@ -52,6 +55,9 @@ export interface ResolvedTemplate {
 }
 
 const TEMPLATES_ROOT = join(import.meta.dir, "../templates");
+
+/** Scaffold offered alongside every template, not owned by a single one. */
+const SHARED_SCAFFOLD_ROOT = join(TEMPLATES_ROOT, "shared/scaffold");
 
 const ALCHEMY: CatalogSpec = { package: "alchemy", spec: "alchemy@latest" };
 const EFFECT: CatalogSpec = { package: "effect", spec: "effect" };
@@ -322,10 +328,10 @@ function codeRabbitPathFilters(name: TemplateName, context: TemplateContext): re
             return ["!packages/assets/src/manifest.gen.ts", "!packages/assets/.alchemy/**"];
         case "tanstack":
             return [
-                "!apps/web/src/routeTree.gen.ts",
-                "!apps/web/.tanstack/**",
-                "!apps/web/.output/**",
-                "!apps/web/.alchemy/**",
+                `!apps/${context.appDir}/src/routeTree.gen.ts`,
+                `!apps/${context.appDir}/.tanstack/**`,
+                `!apps/${context.appDir}/.output/**`,
+                `!apps/${context.appDir}/.alchemy/**`,
             ];
         case "astro": {
             const appDir = context.appDir;
@@ -338,7 +344,10 @@ function codeRabbitPathFilters(name: TemplateName, context: TemplateContext): re
     }
 }
 
-function postInstallCommands(name: TemplateName): readonly PostInstallCommand[] {
+function postInstallCommands(
+    name: TemplateName,
+    context: TemplateContext,
+): readonly PostInstallCommand[] {
     switch (name) {
         case "config":
         case "astro":
@@ -362,12 +371,31 @@ function postInstallCommands(name: TemplateName): readonly PostInstallCommand[] 
         case "tanstack":
             return [
                 {
-                    cwd: "apps/web",
+                    cwd: `apps/${context.appDir}`,
                     command: [process.execPath, "run", "build"],
                     description: "vite build",
                 },
             ];
     }
+}
+
+/**
+ * The production deploy workflow belongs to no single template: it ships with
+ * every one of them so adding tooling to an already-configured repository picks
+ * it up, not just the initial `config` run. Files already on disk are dropped
+ * here rather than merely marked `createOnly`, which keeps an existing workflow
+ * byte-identical and keeps a multi-template run from reporting the same
+ * untouched file once per template.
+ */
+async function sharedScaffold(
+    tool: TemplateName,
+    mapDestination: (source: string) => string,
+    tokens: ReadonlyMap<string, string>,
+    cwd: string,
+): Promise<LoadedTemplate[]> {
+    const files = await loadTemplateTree(SHARED_SCAFFOLD_ROOT, tool, mapDestination, tokens);
+    const present = await Promise.all(files.map((file) => pathExists(join(cwd, file.destination))));
+    return files.filter((_, index) => !present[index]);
 }
 
 export async function resolveTemplate(
@@ -390,6 +418,7 @@ export async function resolveTemplate(
             )),
         );
     }
+    scaffold.push(...(await sharedScaffold(name, mapDestination, tokens, context.cwd)));
     const scaffoldFiles = scaffold.map((file) => ({ ...file, createOnly: true }));
     const files = [...managed, ...scaffoldFiles].map((file) => {
         if (file.destination === ".gitignore") return { ...file, mergeIgnorePatterns: true };
@@ -401,7 +430,7 @@ export async function resolveTemplate(
         files,
         packageJson: packageJsonSpec(name, versions, context.uiBase ?? "radix"),
         codeRabbitPathFilters: codeRabbitPathFilters(name, context),
-        postInstall: postInstallCommands(name),
+        postInstall: postInstallCommands(name, context),
     };
 }
 

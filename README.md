@@ -49,6 +49,26 @@ Managed configuration files prompt before replacement; non-interactive input
 keeps differences unless `--yes` is supplied. Scaffold app/package files are
 create-only and are never overwritten, including with `--yes`.
 
+Run additional templates from the workspace root or any directory inside it.
+repo-int finds the initialized workspace in a parent directory without crossing
+a nested Git repository boundary. You do not need to repeat `config`:
+
+```bash
+cd apps
+bun x @artisann-studios/repo-int convex --yes
+```
+
+If `apps/web` contains a different app, `tanstack` asks for another directory
+name. For non-interactive runs, specify the name explicitly:
+
+```bash
+bun x @artisann-studios/repo-int tanstack --app-dir dashboard --yes
+```
+
+This creates `apps/dashboard`. Use a single directory name, not a path. `--yes`
+does not authorize replacing an unrelated app. Use the same `--app-dir` value to
+rerun the template for that app.
+
 Package integrations work in either order: add `ui` and `assets` to existing
 apps, or create the packages before adding frontend templates. repo-int checks
 the dependencies of each `apps/*` workspace to select its integration. Unrelated
@@ -111,6 +131,24 @@ bun run deploy:github
 Start an app with `bun run --cwd apps/web dev` or
 `bun run --cwd apps/static dev`. Cloudflare/GitHub stack deployments require
 your credentials and are never run by repo-int.
+
+### Production deployment
+
+repo-int adds `.github/workflows/deploy.yml` without replacing an existing file,
+even with `--yes`. The workflow deploys on pushes to `main`, including merged
+pull requests. It does not create PR previews or run cleanup deployments.
+
+Following the
+[Alchemy CI/CD guide](https://alchemy.run/cloudflare/tutorial/part-5.md), run
+the admin-profile setup above once to provision `CLOUDFLARE_API_TOKEN` and
+`CLOUDFLARE_ACCOUNT_ID` as GitHub Actions secrets. App stacks use
+`Cloudflare.state()` so local and CI deployments share remote state.
+
+The workflow deploys app stacks under `apps/*/alchemy.run.ts` to the `prod`
+stage, including apps with custom directory names. It does not run
+`stacks/github.ts` or provision the R2 assets package. Configure any
+app-specific build variables or secrets in the workflow before its first
+deployment. Existing custom deployment workflows remain your responsibility.
 
 ### Shared shadcn UI
 

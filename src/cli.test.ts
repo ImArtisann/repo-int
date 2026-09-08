@@ -434,4 +434,217 @@ describe("template CLI", () => {
         expect(await readdir(cwd)).toEqual([]);
         expect(calls).toEqual([]);
     });
+
+    test("tooling requested inside an app configures the workspace root above it", async () => {
+        const cwd = await temporaryDirectory();
+        expect(
+            await runCli({
+                args: ["config", "tanstack", "--owner", "acme", "--yes"],
+                cwd,
+                logger,
+                runner: recordingRunner(),
+            }),
+        ).toBe(0);
+        const calls: { command: readonly string[]; cwd: string }[] = [];
+        expect(
+            await runCli({
+                args: ["convex", "--yes"],
+                cwd: join(cwd, "apps/web"),
+                logger,
+                runner: recordingRunner(calls),
+            }),
+        ).toBe(0);
+        expect(await Bun.file(join(cwd, "packages/backend/package.json")).exists()).toBeTrue();
+        expect(
+            await Bun.file(join(cwd, "apps/web/packages/backend/package.json")).exists(),
+        ).toBeFalse();
+        expect(
+            (await Bun.file(join(cwd, "apps/web/package.json")).json()).workspaces,
+        ).toBeUndefined();
+        expect(calls.find(({ command }) => command[0] === "git")?.cwd).toBe(cwd);
+        expect(calls.find(({ command }) => command[1] === "install")?.cwd).toBe(cwd);
+    });
+
+    test("a nested Git repository is never adopted into the surrounding workspace", async () => {
+        const cwd = await temporaryDirectory();
+        expect(
+            await runCli({
+                args: ["config", "--owner", "acme", "--yes"],
+                cwd,
+                logger,
+                runner: recordingRunner(),
+            }),
+        ).toBe(0);
+        const rootPackage = await Bun.file(join(cwd, "package.json")).text();
+        const vendored = join(cwd, "vendor/widget");
+        await mkdir(join(vendored, ".git"), { recursive: true });
+        const errors: string[] = [];
+        expect(
+            await runCli({
+                args: ["convex", "--yes"],
+                cwd: vendored,
+                logger: { ...logger, error: (message) => errors.push(message ?? "") },
+                runner: recordingRunner(),
+            }),
+        ).toBe(1);
+        expect(errors.join("\n")).toContain("run `repo-int config` first");
+        expect(await readdir(vendored)).toEqual([".git"]);
+        expect(await Bun.file(join(cwd, "package.json")).text()).toBe(rootPackage);
+    });
+
+    test("--app-dir scaffolds the TanStack app beside an occupied apps/web", async () => {
+        const cwd = await temporaryDirectory();
+        expect(
+            await runCli({
+                args: ["config", "--owner", "acme", "--yes"],
+                cwd,
+                logger,
+                runner: recordingRunner(),
+            }),
+        ).toBe(0);
+        await mkdir(join(cwd, "apps/web"), { recursive: true });
+        await Bun.write(join(cwd, "apps/web/keep.txt"), "user content");
+        const calls: { command: readonly string[]; cwd: string }[] = [];
+        const messages: string[] = [];
+        expect(
+            await runCli({
+                args: ["tanstack", "--app-dir", "marketing", "--yes"],
+                cwd,
+                logger: { ...logger, log: (message) => messages.push(message ?? "") },
+                runner: recordingRunner(calls),
+            }),
+        ).toBe(0);
+        const app = await Bun.file(join(cwd, "apps/marketing/package.json")).json();
+        expect(app.dependencies["@tanstack/react-start"]).toBe("catalog:");
+        expect(await readdir(join(cwd, "apps/web"))).toEqual(["keep.txt"]);
+        expect(
+            calls.find(({ command }) => command[1] === "run" && command[2] === "build")?.cwd,
+        ).toBe(join(cwd, "apps/marketing"));
+        expect(messages).toContain("Next: bun run --cwd apps/marketing dev");
+        const filters = Bun.YAML.parse(await Bun.file(join(cwd, ".coderabbit.yaml")).text()) as {
+            reviews: { path_filters: string[] };
+        };
+        expect(filters.reviews.path_filters).toContain("!apps/marketing/src/routeTree.gen.ts");
+    });
+
+    test("the collision prompt reprompts until a free directory is named", async () => {
+        const cwd = await temporaryDirectory();
+        expect(
+            await runCli({
+                args: ["config", "--owner", "acme", "--yes"],
+                cwd,
+                logger,
+                runner: recordingRunner(),
+            }),
+        ).toBe(0);
+        await mkdir(join(cwd, "apps/web"), { recursive: true });
+        await Bun.write(join(cwd, "apps/web/keep.txt"), "user content");
+        const answers = ["../escape", "web", "portal"];
+        const asked: string[] = [];
+        const warnings: string[] = [];
+        expect(
+            await runCli({
+                args: ["tanstack", "--yes"],
+                cwd,
+                logger: { ...logger, warn: (message) => warnings.push(message ?? "") },
+                prompt: async (question) => {
+                    asked.push(question);
+                    return answers.shift() ?? "";
+                },
+                runner: recordingRunner(),
+            }),
+        ).toBe(0);
+        expect(asked).toHaveLength(3);
+        const app = await Bun.file(join(cwd, "apps/portal/package.json")).json();
+        expect(app.dependencies["@tanstack/react-start"]).toBe("catalog:");
+        expect(await readdir(join(cwd, "apps/web"))).toEqual(["keep.txt"]);
+        expect(warnings.join("\n")).toContain("must be a single directory name under apps/");
+        expect(warnings.join("\n")).toContain("apps/web exists and is not a TanStack Start app");
+    });
+
+    test("an occupied apps/web is never replaced without an explicit directory", async () => {
+        const cwd = await temporaryDirectory();
+        expect(
+            await runCli({
+                args: ["config", "--owner", "acme", "--yes"],
+                cwd,
+                logger,
+                runner: recordingRunner(),
+            }),
+        ).toBe(0);
+        await mkdir(join(cwd, "apps/web"), { recursive: true });
+        await Bun.write(join(cwd, "apps/web/keep.txt"), "user content");
+        const errors: string[] = [];
+        const failing = {
+            cwd,
+            logger: { ...logger, error: (message: string) => errors.push(message ?? "") },
+            runner: recordingRunner(),
+        };
+        expect(await runCli({ ...failing, args: ["tanstack", "--yes"] })).toBe(1);
+        expect(errors.at(-1)).toContain("pass --app-dir <name>");
+        expect(
+            await runCli({ ...failing, args: ["tanstack", "--yes"], prompt: async () => "" }),
+        ).toBe(1);
+        expect(errors.at(-1)).toContain("--app-dir <name>");
+        expect((await readdir(join(cwd, "apps"))).toSorted()).toEqual([".gitkeep", "web"]);
+        expect(await readdir(join(cwd, "apps/web"))).toEqual(["keep.txt"]);
+    });
+
+    test("--app-dir rejects unsafe names, missing values, and unrelated templates", async () => {
+        const cwd = await temporaryDirectory();
+        expect(
+            await runCli({
+                args: ["config", "--owner", "acme", "--yes"],
+                cwd,
+                logger,
+                runner: recordingRunner(),
+            }),
+        ).toBe(0);
+        const options = {
+            cwd,
+            logger,
+            runner: recordingRunner(),
+        };
+        expect(await runCli({ ...options, args: ["tanstack", "--app-dir", "../escape"] })).toBe(1);
+        expect(await runCli({ ...options, args: ["tanstack", "--app-dir", "apps/web"] })).toBe(1);
+        expect(await runCli({ ...options, args: ["tanstack", "--app-dir", "--yes"] })).toBe(1);
+        expect(await runCli({ ...options, args: ["config", "--app-dir", "marketing"] })).toBe(1);
+        expect(await readdir(join(cwd, "apps"))).toEqual([".gitkeep"]);
+    });
+
+    test("Astro refuses the directory reserved for the TanStack app", async () => {
+        const cwd = await temporaryDirectory();
+        expect(
+            await runCli({
+                args: ["config", "--owner", "acme", "--yes"],
+                cwd,
+                logger,
+                runner: recordingRunner(),
+            }),
+        ).toBe(0);
+        await mkdir(join(cwd, "apps/web"), { recursive: true });
+        await Bun.write(join(cwd, "apps/web/keep.txt"), "user content");
+        const errors: string[] = [];
+        expect(
+            await runCli({
+                args: ["tanstack", "astro", "--app-dir", "static", "--yes"],
+                cwd,
+                logger: { ...logger, error: (message) => errors.push(message ?? "") },
+                runner: recordingRunner(),
+            }),
+        ).toBe(1);
+        expect(errors.join("\n")).toContain("apps/static is reserved for the TanStack app");
+        expect((await readdir(join(cwd, "apps"))).toSorted()).toEqual([".gitkeep", "web"]);
+    });
+
+    test("the deployment workflow is created once and later runs keep its content", async () => {
+        const cwd = await temporaryDirectory();
+        const options = { cwd, logger, runner: recordingRunner() };
+        expect(await runCli({ ...options, args: ["config", "--owner", "acme", "--yes"] })).toBe(0);
+        const workflow = join(cwd, ".github/workflows/deploy.yml");
+        expect(await Bun.file(workflow).exists()).toBeTrue();
+        await Bun.write(workflow, "name: my deploy\n");
+        expect(await runCli({ ...options, args: ["ui", "--yes"] })).toBe(0);
+        expect(await Bun.file(workflow).text()).toBe("name: my deploy\n");
+    });
 });

@@ -11,7 +11,7 @@ export class Website extends Cloudflare.Website.Vite<Website>()("Website", {
 export type WebsiteEnv = Cloudflare.InferEnv<typeof Website>;
 
 export default Alchemy.Stack(
-    "__STACK_NAME__Web",
+    "__STACK_NAME____APP_STACK__",
     {
         providers: Cloudflare.providers(),
         state: Cloudflare.state(),
