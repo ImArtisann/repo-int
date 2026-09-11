@@ -44,7 +44,7 @@
     },
     "devDependencies": {
         "@effect/tsgo": "0.41.0",
-        "@oxlint/plugins": "1.79.0",
+        "@oxlint/plugins": "1.82.0",
         "@types/bun": "latest",
         "alchemy": "2.0.0-beta.77",
         "lefthook": "^2.1.12",
