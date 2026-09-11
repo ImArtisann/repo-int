@@ -143,70 +143,86 @@ const program = (input: {
         const runner = yield* Runner;
         const selected = new Set<TemplateName>(input.templates);
 
-        if (Option.isSome(input.uiBase) && !selected.has("ui")) {
-            return yield* new UsageError({
-                message: "--ui-base requires the ui template.",
-            });
-        }
-
-        if (Option.isSome(input.appDir) && !selected.has("tanstack")) {
-            return yield* new UsageError({
-                message: "--app-dir requires the tanstack template.",
-            });
-        }
-
-        if (input.xstate && !selected.has("config")) {
-            return yield* new UsageError({
-                message: "--xstate requires the config template.",
-            });
-        }
+        yield* Effect.forEach(
+            [
+                [
+                    Option.isSome(input.uiBase) && !selected.has("ui"),
+                    "--ui-base requires the ui template.",
+                ],
+                [
+                    Option.isSome(input.appDir) && !selected.has("tanstack"),
+                    "--app-dir requires the tanstack template.",
+                ],
+                [input.xstate && !selected.has("config"), "--xstate requires the config template."],
+            ] as const,
+            ([violated, message]) =>
+                Effect.fail(new UsageError({ message })).pipe(
+                    Effect.when(Effect.succeed(violated)),
+                ),
+            { discard: true },
+        );
 
         const invokedFrom = yield* InvocationDirectory;
         const cwd = yield* findWorkspaceRoot(invokedFrom);
 
-        if (cwd !== invokedFrom) yield* log.log(`Found the repo-int workspace at ${cwd}`);
+        yield* log
+            .log(`Found the repo-int workspace at ${cwd}`)
+            .pipe(Effect.when(Effect.succeed(cwd !== invokedFrom)));
         yield* log.log(`Initializing ${cwd}`);
         yield* initializeGitRepository(cwd);
         const document = yield* loadPackageJson(pathService.join(cwd, "package.json"));
         const pkg = Option.isSome(document) ? document.value.raw : {};
         const viteConfig = pathService.join(cwd, "vite.config.ts");
 
-        if (
-            !selected.has("config") &&
-            (!(yield* fs.exists(viteConfig)) || pkg["workspaces"] === undefined)
-        ) {
-            return yield* new WorkspaceError({
+        const configured = yield* fs.exists(viteConfig).pipe(
+            Effect.map((exists) => exists && pkg["workspaces"] !== undefined),
+            Effect.when(Effect.succeed(!selected.has("config"))),
+        );
+
+        yield* Effect.fail(
+            new WorkspaceError({
                 message:
                     "The config template has not been applied here; run `repo-int config` first.",
-            });
-        }
+            }),
+        ).pipe(Effect.when(Effect.succeed(Option.getOrElse(configured, () => true) === false)));
 
         const owner = selected.has("config") ? yield* resolveGitHubOwner(cwd, input.owner) : "";
 
-        const features: ReadonlySet<TemplateFeature> =
-            input.xstate || (yield* hasXStateRules(cwd)) ? new Set(["xstate"]) : new Set();
+        const features: ReadonlySet<TemplateFeature> = yield* hasXStateRules(cwd).pipe(
+            Effect.map((installed) =>
+                input.xstate || installed
+                    ? new Set<TemplateFeature>(["xstate"])
+                    : new Set<TemplateFeature>(),
+            ),
+        );
 
         const web = pathService.join(cwd, "apps/web");
         const staticApp = pathService.join(cwd, "apps/static");
         const webExists = yield* fs.exists(web);
 
-        const tanstackDir = selected.has("tanstack")
-            ? yield* resolveTanStackAppDir(cwd, input.appDir)
-            : "";
+        const tanstackDir = yield* resolveTanStackAppDir(cwd, input.appDir).pipe(
+            Effect.when(Effect.succeed(selected.has("tanstack"))),
+            Effect.map(Option.getOrElse(() => "")),
+        );
 
-        for (const name of ["ui", "assets"] as const) {
-            if (!selected.has(name)) continue;
-            const directory = pathService.join(cwd, "packages", name);
+        yield* Effect.forEach(
+            ["ui", "assets"] as const,
+            (name) =>
+                Effect.gen(function* () {
+                    const directory = pathService.join(cwd, "packages", name);
 
-            if (
-                (yield* fs.exists(directory)) &&
-                (yield* readPackage(directory))["name"] !== `@repo/${name}`
-            ) {
-                return yield* new WorkspaceError({
-                    message: `packages/${name} exists and is not @repo/${name}; move it before running the ${name} template.`,
-                });
-            }
-        }
+                    const occupied =
+                        (yield* fs.exists(directory)) &&
+                        (yield* readPackage(directory))["name"] !== `@repo/${name}`;
+
+                    yield* Effect.fail(
+                        new WorkspaceError({
+                            message: `packages/${name} exists and is not @repo/${name}; move it before running the ${name} template.`,
+                        }),
+                    ).pipe(Effect.when(Effect.succeed(occupied)));
+                }).pipe(Effect.when(Effect.succeed(selected.has(name)))),
+            { discard: true },
+        );
 
         const existingUi =
             (yield* readPackage(pathService.join(cwd, "packages/ui")))["name"] === "@repo/ui";
@@ -215,42 +231,75 @@ const program = (input: {
             ? yield* readUiBase(pathService.join(cwd, "packages/ui"))
             : undefined;
 
-        if (
-            Option.isSome(input.uiBase) &&
-            existingBase !== undefined &&
-            input.uiBase.value !== existingBase
-        ) {
-            return yield* new WorkspaceError({
-                message: `packages/ui already uses ${existingBase}. Switching to ${input.uiBase.value} requires migrating its components; repo-int will not overwrite them, even with --yes.`,
-            });
-        }
+        yield* Effect.suspend(
+            () =>
+                new WorkspaceError({
+                    message: `packages/ui already uses ${existingBase}. Switching to ${Option.getOrElse(input.uiBase, () => "radix")} requires migrating its components; repo-int will not overwrite them, even with --yes.`,
+                }),
+        ).pipe(
+            Effect.when(
+                Effect.succeed(
+                    Option.isSome(input.uiBase) &&
+                        existingBase !== undefined &&
+                        input.uiBase.value !== existingBase,
+                ),
+            ),
+        );
 
         const uiBase = Option.getOrElse(input.uiBase, () => existingBase ?? "radix");
 
-        if (selected.has("ui") || existingUi) yield* checkUiAppCompatibility(cwd, uiBase);
-        let astroDir = "";
+        yield* checkUiAppCompatibility(cwd, uiBase).pipe(
+            Effect.when(Effect.succeed(selected.has("ui") || existingUi)),
+        );
 
-        if (selected.has("astro")) {
-            if (yield* hasDependency(web, "astro")) astroDir = "web";
-            else if (yield* hasDependency(staticApp, "astro")) astroDir = "static";
-            else if (!webExists && !selected.has("tanstack")) astroDir = "web";
-            else if (tanstackDir !== "static" && !(yield* fs.exists(staticApp)))
-                astroDir = "static";
-            else
-                return yield* new WorkspaceError({
-                    message:
-                        tanstackDir === "static"
-                            ? "apps/static is reserved for the TanStack app; choose another --app-dir before running the astro template."
-                            : "apps/web and apps/static are both taken; move one before running the astro template.",
-                });
-        }
+        const astroDir = yield* Effect.suspend(() =>
+            Effect.findFirst(
+                [
+                    ["web", hasDependency(web, "astro")],
+                    ["static", hasDependency(staticApp, "astro")],
+                    ["web", Effect.succeed(!webExists && !selected.has("tanstack"))],
+                    [
+                        "static",
+                        fs
+                            .exists(staticApp)
+                            .pipe(Effect.map((exists) => tanstackDir !== "static" && !exists)),
+                    ],
+                ] as const,
+                ([, candidate]) => candidate,
+            ).pipe(
+                Effect.flatMap(
+                    Option.match({
+                        onNone: () =>
+                            Effect.fail(
+                                new WorkspaceError({
+                                    message: Match.value(tanstackDir).pipe(
+                                        Match.when(
+                                            "static",
+                                            () =>
+                                                "apps/static is reserved for the TanStack app; choose another --app-dir before running the astro template.",
+                                        ),
+                                        Match.orElse(
+                                            () =>
+                                                "apps/web and apps/static are both taken; move one before running the astro template.",
+                                        ),
+                                    ),
+                                }),
+                            ),
+                        onSome: ([dir]) => Effect.succeed(dir),
+                    }),
+                ),
+            ),
+        ).pipe(
+            Effect.when(Effect.succeed(selected.has("astro"))),
+            Effect.map(Option.getOrElse(() => "")),
+        );
 
         const versions = existingCatalog(Option.map(document, (loaded) => loaded.fields));
 
         // Bun's registry lookup requires a package.json even before dependencies are installed.
-        if (Option.isNone(document)) {
-            yield* updatePackageJson(cwd, {});
-        }
+        yield* updatePackageJson(cwd, {}).pipe(
+            Effect.when(Effect.succeed(Option.isNone(document))),
+        );
 
         const specs = new Map(
             TEMPLATE_ORDER.filter((name) => selected.has(name)).flatMap((name) =>
@@ -262,25 +311,41 @@ const program = (input: {
             `Resolving ${[...specs.keys()].filter((name) => versions[name] === undefined).length} package versions...`,
         );
 
-        for (const [name, spec] of specs) {
-            if (versions[name] !== undefined || spec === "alchemy-peer") continue;
-            versions[name] = catalogRange(
-                spec === "effect"
-                    ? yield* resolveEffectVersion(cwd)
-                    : yield* resolveVersion(cwd, spec),
-            );
-        }
+        yield* Effect.forEach(
+            specs,
+            ([name, spec]) =>
+                Effect.gen(function* () {
+                    const resolved = yield* Match.value(spec).pipe(
+                        Match.when("effect", () => resolveEffectVersion(cwd)),
+                        Match.orElse(() => resolveVersion(cwd, spec)),
+                    );
 
-        if (
-            specs.has("@alchemy.run/frontend-frameworks") &&
-            versions["@alchemy.run/frontend-frameworks"] === undefined
-        ) {
-            const alchemy = versions["alchemy"];
+                    versions[name] = catalogRange(resolved);
+                }).pipe(
+                    Effect.when(
+                        Effect.succeed(versions[name] === undefined && spec !== "alchemy-peer"),
+                    ),
+                ),
+            { concurrency: "unbounded", discard: true },
+        );
 
-            if (alchemy === undefined)
-                return yield* new WorkspaceError({ message: "Alchemy version is missing." });
-            versions["@alchemy.run/frontend-frameworks"] = alchemy;
-        }
+        yield* Effect.suspend(() =>
+            Option.match(Option.fromNullishOr(versions["alchemy"]), {
+                onNone: () =>
+                    Effect.fail(new WorkspaceError({ message: "Alchemy version is missing." })),
+                onSome: (alchemy) =>
+                    Effect.sync(() => {
+                        versions["@alchemy.run/frontend-frameworks"] = alchemy;
+                    }),
+            }),
+        ).pipe(
+            Effect.when(
+                Effect.succeed(
+                    specs.has("@alchemy.run/frontend-frameworks") &&
+                        versions["@alchemy.run/frontend-frameworks"] === undefined,
+                ),
+            ),
+        );
 
         const repoName = yield* defaultPackageName(cwd);
 
@@ -291,78 +356,99 @@ const program = (input: {
 
         const resolved: Array<ResolvedTemplate> = [];
 
-        for (const name of TEMPLATE_ORDER) {
-            if (!selected.has(name)) continue;
+        yield* Effect.forEach(
+            TEMPLATE_ORDER,
+            (name) =>
+                Effect.gen(function* () {
+                    const template = yield* resolveTemplate(
+                        name,
+                        {
+                            cwd,
+                            repoName,
+                            stackName,
+                            owner,
+                            uiBase,
+                            appDir: Match.value(name).pipe(
+                                Match.when("tanstack", () => tanstackDir),
+                                Match.when("astro", () => astroDir),
+                                Match.orElse(() => ""),
+                            ),
+                            features,
+                        },
+                        versions,
+                    );
 
-            const template = yield* resolveTemplate(
-                name,
-                {
-                    cwd,
-                    repoName,
-                    stackName,
-                    owner,
-                    uiBase,
-                    appDir: Match.value(name).pipe(
-                        Match.when("tanstack", () => tanstackDir),
-                        Match.when("astro", () => astroDir),
-                        Match.orElse(() => ""),
-                    ),
-                    features,
-                },
-                versions,
-            );
+                    resolved.push(template);
 
-            resolved.push(template);
-
-            for (const file of template.files) yield* synchronizeManagedFile(cwd, file);
-            yield* updatePackageJson(cwd, template.packageJson);
-            yield* mergeCodeRabbitPathFilters(cwd, template.codeRabbitPathFilters);
-        }
+                    yield* Effect.forEach(
+                        template.files,
+                        (file) => synchronizeManagedFile(cwd, file),
+                        { discard: true },
+                    );
+                    yield* updatePackageJson(cwd, template.packageJson);
+                    yield* mergeCodeRabbitPathFilters(cwd, template.codeRabbitPathFilters);
+                }).pipe(Effect.when(Effect.succeed(selected.has(name)))),
+            { discard: true },
+        );
 
         yield* integrateWorkspacePackages(cwd, uiBase);
         const install: ReadonlyArray<string> = [process.execPath, "install"];
         yield* requireSuccess(install, yield* runner.run(install, { cwd, stdio: "inherit" }));
 
-        if (selected.has("convex")) {
-            yield* log.warn(
+        yield* log
+            .warn(
                 "[skipped] convex codegen (run `bun run --cwd packages/backend codegen` after `convex dev` links a deployment)",
-            );
-        }
+            )
+            .pipe(Effect.when(Effect.succeed(selected.has("convex"))));
 
-        for (const template of resolved) {
-            for (const step of template.postInstall) {
-                yield* log.log(step.description);
+        yield* Effect.forEach(
+            resolved,
+            (template) =>
+                Effect.forEach(
+                    template.postInstall,
+                    (step) =>
+                        Effect.gen(function* () {
+                            yield* log.log(step.description);
 
-                const result = yield* runner.run(step.command, {
-                    cwd: pathService.join(cwd, step.cwd),
-                    stdio: "inherit",
-                });
+                            const result = yield* runner.run(step.command, {
+                                cwd: pathService.join(cwd, step.cwd),
+                                stdio: "inherit",
+                            });
 
-                if (template.name === "tanstack" && result.exitCode !== 0) {
-                    yield* log.warn(
-                        `[skipped] TanStack build failed; run \`bun run --cwd apps/${tanstackDir} dev\` to regenerate the route tree.`,
-                    );
-                } else yield* requireSuccess(step.command, result);
-            }
-        }
+                            yield* Match.value(
+                                template.name === "tanstack" && result.exitCode !== 0,
+                            ).pipe(
+                                Match.when(true, () =>
+                                    log.warn(
+                                        `[skipped] TanStack build failed; run \`bun run --cwd apps/${tanstackDir} dev\` to regenerate the route tree.`,
+                                    ),
+                                ),
+                                Match.orElse(() => requireSuccess(step.command, result)),
+                            );
+                        }),
+                    { discard: true },
+                ),
+            { discard: true },
+        );
 
-        if (selected.has("config"))
-            yield* log.log("Next: alchemy login --profile admin, then bun run deploy:github");
-
-        if (selected.has("convex"))
-            yield* log.log("Next: bun run --cwd packages/backend dev:convex to link a deployment");
-
-        if (selected.has("tanstack")) yield* log.log(`Next: bun run --cwd apps/${tanstackDir} dev`);
-
-        if (selected.has("astro")) yield* log.log(`Next: bun run --cwd apps/${astroDir} dev`);
-
-        if (selected.has("ui"))
-            yield* log.log("Next: bun x --bun shadcn@latest add input --cwd packages/ui");
-
-        if (selected.has("assets"))
-            yield* log.log(
+        const nextSteps: ReadonlyArray<readonly [TemplateName, string]> = [
+            ["config", "Next: alchemy login --profile admin, then bun run deploy:github"],
+            ["convex", "Next: bun run --cwd packages/backend dev:convex to link a deployment"],
+            ["tanstack", `Next: bun run --cwd apps/${tanstackDir} dev`],
+            ["astro", `Next: bun run --cwd apps/${astroDir} dev`],
+            ["ui", "Next: bun x --bun shadcn@latest add input --cwd packages/ui"],
+            [
+                "assets",
                 "Next: configure packages/assets/.env, generate the image manifest, then deploy and upload assets",
-            );
+            ],
+        ];
+
+        yield* Effect.forEach(
+            nextSteps,
+            ([name, message]) =>
+                log.log(message).pipe(Effect.when(Effect.succeed(selected.has(name)))),
+            { discard: true },
+        );
         yield* log.log("Repository initialization complete.");
     });
 
@@ -405,19 +491,19 @@ export const runCli = (options: CliOptions = {}): Promise<number> => {
             onFailure: (cause) =>
                 Effect.gen(function* () {
                     const log = yield* Log;
-                    const error = Cause.findErrorOption(cause);
 
-                    if (Option.isNone(error)) {
-                        yield* log.error(Cause.pretty(cause));
-
-                        return 1;
-                    }
-
-                    if (CliError.isCliError(error.value))
-                        return Runtime.getErrorExitCode(error.value);
-                    yield* log.error(error.value.message);
-
-                    return 1;
+                    return yield* Option.match(Cause.findErrorOption(cause), {
+                        onNone: () => log.error(Cause.pretty(cause)).pipe(Effect.as(1)),
+                        onSome: (error) =>
+                            Match.value(error).pipe(
+                                Match.when(CliError.isCliError, (cliError) =>
+                                    Effect.succeed(Runtime.getErrorExitCode(cliError)),
+                                ),
+                                Match.orElse((failure) =>
+                                    log.error(failure.message).pipe(Effect.as(1)),
+                                ),
+                            ),
+                    });
                 }),
         }),
         Effect.provide(services),
