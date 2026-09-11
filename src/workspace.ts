@@ -30,53 +30,32 @@ export const findWorkspaceRoot = (
         const fs = yield* FileSystem;
         const pathService = yield* Path;
         const original = pathService.resolve(cwd);
-        const state = { directory: original, done: false };
 
-        yield* Effect.whileLoop({
-            while: () => !state.done,
-            body: () =>
-                Effect.gen(function* () {
-                    const directory = state.directory;
+        const walk = Effect.fn(function* (
+            directory: string,
+        ): Effect.fn.Return<string, PlatformError, FileSystem | Path> {
+            const configured =
+                (yield* fs.exists(pathService.join(directory, "vite.config.ts"))) &&
+                (yield* loadPackageJson(pathService.join(directory, "package.json")).pipe(
+                    Effect.catchTag("repo-int/ManifestError", () => Effect.succeedNone),
+                    Effect.map(
+                        (document) =>
+                            Option.isSome(document) &&
+                            document.value.raw["workspaces"] !== undefined,
+                    ),
+                ));
 
-                    const configured =
-                        (yield* fs.exists(pathService.join(directory, "vite.config.ts"))) &&
-                        (yield* loadPackageJson(pathService.join(directory, "package.json")).pipe(
-                            Effect.catchTag("repo-int/ManifestError", () => Effect.succeedNone),
-                            Effect.map(
-                                (document) =>
-                                    Option.isSome(document) &&
-                                    document.value.raw["workspaces"] !== undefined,
-                            ),
-                        ));
+            if (configured) return directory;
 
-                    if (configured) return { _tag: "root" as const };
+            const parent = pathService.dirname(directory);
 
-                    const parent = pathService.dirname(directory);
+            const bounded =
+                parent === directory || (yield* fs.exists(pathService.join(directory, ".git")));
 
-                    const bounded =
-                        parent === directory ||
-                        (yield* fs.exists(pathService.join(directory, ".git")));
-
-                    return bounded
-                        ? { _tag: "bounded" as const }
-                        : { _tag: "ascend" as const, parent };
-                }),
-            step: (outcome) =>
-                Match.value(outcome).pipe(
-                    Match.when({ _tag: "root" }, () => {
-                        state.done = true;
-                    }),
-                    Match.when({ _tag: "bounded" }, () => {
-                        state.directory = original;
-                        state.done = true;
-                    }),
-                    Match.orElse((ascend) => {
-                        state.directory = ascend.parent;
-                    }),
-                ),
+            return bounded ? original : yield* walk(parent);
         });
 
-        return state.directory;
+        return yield* walk(original);
     });
 
 /** True when a previous `--xstate` run installed the XState lint rules. */
@@ -178,68 +157,60 @@ export const resolveTanStackAppDir = (
 
         if (yield* isTanStackAppDir(cwd, "web")) return "web";
 
-        const state = { answer: "", done: false };
+        const askAppDir = Effect.fn(function* (): Effect.fn.Return<
+            string,
+            WorkspaceError | ManifestError | PlatformError,
+            FileSystem | Path | Terminal.Terminal
+        > {
+            const answer = yield* interaction
+                .prompt(
+                    "apps/web is taken. Directory name for the TanStack app under apps/ (empty to cancel):",
+                )
+                .pipe(Effect.catchTag("QuitError", () => Effect.succeed(Option.none<string>())));
 
-        yield* Effect.whileLoop({
-            while: () => !state.done,
-            body: () =>
-                Effect.gen(function* () {
-                    const answer = yield* interaction
-                        .prompt(
-                            "apps/web is taken. Directory name for the TanStack app under apps/ (empty to cancel):",
-                        )
-                        .pipe(
-                            Effect.catchTag("QuitError", () =>
-                                Effect.succeed(Option.none<string>()),
-                            ),
-                        );
-
-                    yield* Option.match(answer, {
-                        onNone: () =>
-                            Effect.fail(
-                                new WorkspaceError({
-                                    message:
-                                        "apps/web exists and is not a TanStack Start app; pass --app-dir <name> to scaffold the app in another directory under apps/.",
-                                }),
-                            ),
-                        onSome: () => Effect.void,
-                    });
-
-                    const name = Option.getOrElse(answer, () => "").trim();
-
-                    yield* Effect.fail(
+            yield* Option.match(answer, {
+                onNone: () =>
+                    Effect.fail(
                         new WorkspaceError({
                             message:
-                                "No TanStack application directory was chosen; rerun with --app-dir <name> to scaffold the app under apps/.",
+                                "apps/web exists and is not a TanStack Start app; pass --app-dir <name> to scaffold the app in another directory under apps/.",
                         }),
-                    ).pipe(Effect.when(Effect.succeed(name === "")));
+                    ),
+                onSome: () => Effect.void,
+            });
 
-                    return yield* Option.match(Option.fromNullishOr(appDirIssue(name)), {
-                        onNone: () =>
-                            isTanStackAppDir(cwd, name).pipe(
-                                Effect.flatMap((free) =>
-                                    Match.value(free).pipe(
-                                        Match.when(false, () =>
-                                            log
-                                                .warn(
-                                                    `[rejected] apps/${name} exists and is not a TanStack Start app.`,
-                                                )
-                                                .pipe(Effect.as(false)),
-                                        ),
-                                        Match.orElse(() => Effect.succeed(true)),
-                                    ),
-                                ),
-                            ),
-                        onSome: (issue) => log.warn(`[rejected] ${issue}`).pipe(Effect.as(false)),
-                    }).pipe(Effect.map((accepted) => ({ answer: name, done: accepted })));
+            const name = Option.getOrElse(answer, () => "").trim();
+
+            yield* Effect.fail(
+                new WorkspaceError({
+                    message:
+                        "No TanStack application directory was chosen; rerun with --app-dir <name> to scaffold the app under apps/.",
                 }),
-            step: (outcome) => {
-                state.answer = outcome.answer;
-                state.done = outcome.done;
-            },
+            ).pipe(Effect.when(Effect.succeed(name === "")));
+
+            const accepted = yield* Option.match(Option.fromNullishOr(appDirIssue(name)), {
+                onNone: () =>
+                    isTanStackAppDir(cwd, name).pipe(
+                        Effect.flatMap((free) =>
+                            Match.value(free).pipe(
+                                Match.when(false, () =>
+                                    log
+                                        .warn(
+                                            `[rejected] apps/${name} exists and is not a TanStack Start app.`,
+                                        )
+                                        .pipe(Effect.as(false)),
+                                ),
+                                Match.orElse(() => Effect.succeed(true)),
+                            ),
+                        ),
+                    ),
+                onSome: (issue) => log.warn(`[rejected] ${issue}`).pipe(Effect.as(false)),
+            });
+
+            return accepted ? name : yield* askAppDir();
         });
 
-        return state.answer;
+        return yield* askAppDir();
     });
 
 export const readUiBase = (
