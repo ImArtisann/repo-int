@@ -28,11 +28,11 @@ const viewVersion = (cwd: string, spec: string): Effect.Effect<string, VersionEr
         yield* requireSuccess(command, result);
         const version = result.stdout.trim();
 
-        if (version === "") {
-            return yield* new WorkspaceError({
+        yield* Effect.fail(
+            new WorkspaceError({
                 message: `bun pm view ${spec} version returned no version.`,
-            });
-        }
+            }),
+        ).pipe(Effect.when(Effect.succeed(version === "")));
 
         return version;
     });
@@ -59,10 +59,11 @@ export const resolveVersion = (
  * reaches the 4.x line, otherwise the rc tag alchemy and @confect/* peer on.
  */
 export const resolveEffectVersion = (cwd: string): Effect.Effect<string, VersionError, Runner> =>
-    Effect.flatMap(resolveVersion(cwd, "effect@latest"), (latest) =>
-        Bun.semver.satisfies(latest, EFFECT_MINIMUM)
-            ? Effect.succeed(latest)
-            : resolveVersion(cwd, "effect@rc"),
+    resolveVersion(cwd, "effect@latest").pipe(
+        Effect.filterOrElse(
+            (latest) => Bun.semver.satisfies(latest, EFFECT_MINIMUM),
+            () => resolveVersion(cwd, "effect@rc"),
+        ),
     );
 
 /**

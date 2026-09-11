@@ -1,5 +1,6 @@
 import * as Effect from "effect/Effect";
 import { FileSystem } from "effect/FileSystem";
+import * as Match from "effect/Match";
 import * as Option from "effect/Option";
 import { Path } from "effect/Path";
 import type { PlatformError } from "effect/PlatformError";
@@ -29,26 +30,53 @@ export const findWorkspaceRoot = (
         const fs = yield* FileSystem;
         const pathService = yield* Path;
         const original = pathService.resolve(cwd);
-        let directory = original;
+        const state = { directory: original, done: false };
 
-        while (true) {
-            if (yield* fs.exists(pathService.join(directory, "vite.config.ts"))) {
-                const document = yield* loadPackageJson(
-                    pathService.join(directory, "package.json"),
-                ).pipe(
-                    Effect.catchTag("repo-int/ManifestError", () => Effect.succeed(Option.none())),
-                );
+        yield* Effect.whileLoop({
+            while: () => !state.done,
+            body: () =>
+                Effect.gen(function* () {
+                    const directory = state.directory;
 
-                if (Option.isSome(document) && document.value.raw["workspaces"] !== undefined)
-                    return directory;
-            }
+                    const configured =
+                        (yield* fs.exists(pathService.join(directory, "vite.config.ts"))) &&
+                        (yield* loadPackageJson(pathService.join(directory, "package.json")).pipe(
+                            Effect.catchTag("repo-int/ManifestError", () => Effect.succeedNone),
+                            Effect.map(
+                                (document) =>
+                                    Option.isSome(document) &&
+                                    document.value.raw["workspaces"] !== undefined,
+                            ),
+                        ));
 
-            const parent = pathService.dirname(directory);
+                    if (configured) return { _tag: "root" as const };
 
-            if (parent === directory || (yield* fs.exists(pathService.join(directory, ".git"))))
-                return original;
-            directory = parent;
-        }
+                    const parent = pathService.dirname(directory);
+
+                    const bounded =
+                        parent === directory ||
+                        (yield* fs.exists(pathService.join(directory, ".git")));
+
+                    return bounded
+                        ? { _tag: "bounded" as const }
+                        : { _tag: "ascend" as const, parent };
+                }),
+            step: (outcome) =>
+                Match.value(outcome).pipe(
+                    Match.when({ _tag: "root" }, () => {
+                        state.done = true;
+                    }),
+                    Match.when({ _tag: "bounded" }, () => {
+                        state.directory = original;
+                        state.done = true;
+                    }),
+                    Match.orElse((ascend) => {
+                        state.directory = ascend.parent;
+                    }),
+                ),
+        });
+
+        return state.directory;
     });
 
 /** True when a previous `--xstate` run installed the XState lint rules. */
@@ -150,39 +178,68 @@ export const resolveTanStackAppDir = (
 
         if (yield* isTanStackAppDir(cwd, "web")) return "web";
 
-        while (true) {
-            const answer = yield* interaction
-                .prompt(
-                    "apps/web is taken. Directory name for the TanStack app under apps/ (empty to cancel):",
-                )
-                .pipe(Effect.catchTag("QuitError", () => Effect.succeed(Option.none<string>())));
+        const state = { answer: "", done: false };
 
-            if (Option.isNone(answer))
-                return yield* new WorkspaceError({
-                    message:
-                        "apps/web exists and is not a TanStack Start app; pass --app-dir <name> to scaffold the app in another directory under apps/.",
-                });
-            const name = answer.value.trim();
+        yield* Effect.whileLoop({
+            while: () => !state.done,
+            body: () =>
+                Effect.gen(function* () {
+                    const answer = yield* interaction
+                        .prompt(
+                            "apps/web is taken. Directory name for the TanStack app under apps/ (empty to cancel):",
+                        )
+                        .pipe(
+                            Effect.catchTag("QuitError", () =>
+                                Effect.succeed(Option.none<string>()),
+                            ),
+                        );
 
-            if (name === "")
-                return yield* new WorkspaceError({
-                    message:
-                        "No TanStack application directory was chosen; rerun with --app-dir <name> to scaffold the app under apps/.",
-                });
-            const issue = appDirIssue(name);
+                    yield* Option.match(answer, {
+                        onNone: () =>
+                            Effect.fail(
+                                new WorkspaceError({
+                                    message:
+                                        "apps/web exists and is not a TanStack Start app; pass --app-dir <name> to scaffold the app in another directory under apps/.",
+                                }),
+                            ),
+                        onSome: () => Effect.void,
+                    });
 
-            if (issue !== undefined) {
-                yield* log.warn(`[rejected] ${issue}`);
-                continue;
-            }
+                    const name = Option.getOrElse(answer, () => "").trim();
 
-            if (!(yield* isTanStackAppDir(cwd, name))) {
-                yield* log.warn(`[rejected] apps/${name} exists and is not a TanStack Start app.`);
-                continue;
-            }
+                    yield* Effect.fail(
+                        new WorkspaceError({
+                            message:
+                                "No TanStack application directory was chosen; rerun with --app-dir <name> to scaffold the app under apps/.",
+                        }),
+                    ).pipe(Effect.when(Effect.succeed(name === "")));
 
-            return name;
-        }
+                    return yield* Option.match(Option.fromNullishOr(appDirIssue(name)), {
+                        onNone: () =>
+                            isTanStackAppDir(cwd, name).pipe(
+                                Effect.flatMap((free) =>
+                                    Match.value(free).pipe(
+                                        Match.when(false, () =>
+                                            log
+                                                .warn(
+                                                    `[rejected] apps/${name} exists and is not a TanStack Start app.`,
+                                                )
+                                                .pipe(Effect.as(false)),
+                                        ),
+                                        Match.orElse(() => Effect.succeed(true)),
+                                    ),
+                                ),
+                            ),
+                        onSome: (issue) => log.warn(`[rejected] ${issue}`).pipe(Effect.as(false)),
+                    }).pipe(Effect.map((accepted) => ({ answer: name, done: accepted })));
+                }),
+            step: (outcome) => {
+                state.answer = outcome.answer;
+                state.done = outcome.done;
+            },
+        });
+
+        return state.answer;
     });
 
 export const readUiBase = (
@@ -197,19 +254,32 @@ export const readUiBase = (
 
         const style = yield* readComponentsStyle(directory);
 
-        if (Option.isSome(style)) {
-            if (style.value.startsWith("base-")) return "base";
-
-            if (
-                style.value.startsWith("radix-") ||
-                style.value === "new-york" ||
-                style.value === "default"
-            )
-                return "radix";
-        }
-
-        return yield* new ManifestError({
-            message: `Cannot determine the shadcn base from ${file}.`,
+        return yield* Option.match(style, {
+            onNone: () =>
+                Effect.fail(
+                    new ManifestError({
+                        message: `Cannot determine the shadcn base from ${file}.`,
+                    }),
+                ),
+            onSome: (value) =>
+                Match.value(value).pipe(
+                    Match.when(
+                        (candidate) => candidate.startsWith("base-"),
+                        () => Effect.succeed("base" as const),
+                    ),
+                    Match.whenOr("new-york", "default", () => Effect.succeed("radix" as const)),
+                    Match.when(
+                        (candidate) => candidate.startsWith("radix-"),
+                        () => Effect.succeed("radix" as const),
+                    ),
+                    Match.orElse(() =>
+                        Effect.fail(
+                            new ManifestError({
+                                message: `Cannot determine the shadcn base from ${file}.`,
+                            }),
+                        ),
+                    ),
+                ),
         });
     });
 
@@ -224,21 +294,32 @@ export const checkUiAppCompatibility = (
 
         if (!(yield* fs.exists(appsRoot))) return;
 
-        for (const app of yield* fs.readDirectory(appsRoot)) {
-            const directory = pathService.join(appsRoot, app);
-            const info = yield* fs.stat(directory);
+        yield* Effect.forEach(
+            yield* fs.readDirectory(appsRoot),
+            (app) =>
+                Effect.gen(function* () {
+                    const directory = pathService.join(appsRoot, app);
+                    const info = yield* fs.stat(directory);
 
-            if (info.type !== "Directory") continue;
+                    const isTanStack =
+                        info.type === "Directory" &&
+                        (yield* hasDependency(directory, "@tanstack/react-start"));
 
-            if (!(yield* hasDependency(directory, "@tanstack/react-start"))) continue;
-            const appBase = yield* readUiBase(directory);
+                    const appBase = yield* readUiBase(directory).pipe(
+                        Effect.when(Effect.succeed(isTanStack)),
+                        Effect.map(Option.getOrElse((): UiBase | undefined => undefined)),
+                    );
 
-            if (appBase !== undefined && appBase !== uiBase) {
-                return yield* new WorkspaceError({
-                    message: `apps/${app}/components.json uses ${appBase}, but the shared UI uses ${uiBase}. Migrate the app's shadcn configuration and components before continuing.`,
-                });
-            }
-        }
+                    yield* Effect.fail(
+                        new WorkspaceError({
+                            message: `apps/${app}/components.json uses ${appBase}, but the shared UI uses ${uiBase}. Migrate the app's shadcn configuration and components before continuing.`,
+                        }),
+                    ).pipe(
+                        Effect.when(Effect.succeed(appBase !== undefined && appBase !== uiBase)),
+                    );
+                }),
+            { discard: true },
+        );
     });
 
 export const integrateWorkspacePackages = (
@@ -269,86 +350,141 @@ export const integrateWorkspacePackages = (
             left.localeCompare(right),
         );
 
-        for (const app of apps) {
-            const appRoot = pathService.join(appsRoot, app);
-            const info = yield* fs.stat(appRoot);
+        yield* Effect.forEach(
+            apps,
+            (app) =>
+                Effect.gen(function* () {
+                    const appRoot = pathService.join(appsRoot, app);
+                    const info = yield* fs.stat(appRoot);
 
-            if (info.type !== "Directory") continue;
-            const pkg = yield* readPackage(appRoot);
-            const dependencies = pkg["dependencies"];
+                    yield* Effect.suspend(() =>
+                        Effect.gen(function* () {
+                            const pkg = yield* readPackage(appRoot);
+                            const dependencies = pkg["dependencies"];
 
-            if (!Predicate.isObject(dependencies) || Array.isArray(dependencies)) continue;
+                            const framework =
+                                Predicate.isObject(dependencies) && !Array.isArray(dependencies)
+                                    ? Object.hasOwn(dependencies, "@tanstack/react-start")
+                                        ? ("tanstack" as const)
+                                        : Object.hasOwn(dependencies, "astro")
+                                          ? ("astro" as const)
+                                          : undefined
+                                    : undefined;
 
-            const framework = Object.hasOwn(dependencies, "@tanstack/react-start")
-                ? ("tanstack" as const)
-                : Object.hasOwn(dependencies, "astro")
-                  ? ("astro" as const)
-                  : undefined;
+                            const packages = [
+                                ...(ui && framework === "tanstack" ? (["ui"] as const) : []),
+                                ...(assets ? (["assets"] as const) : []),
+                            ];
 
-            if (framework === undefined) continue;
-            const desired: Record<string, string> = {};
-            const packages: Array<"ui" | "assets"> = [];
+                            yield* Option.match(Option.fromNullishOr(framework), {
+                                onNone: () => Effect.void,
+                                onSome: (framework) =>
+                                    Effect.gen(function* () {
+                                        const desired = Object.fromEntries([
+                                            ...(ui && framework === "tanstack"
+                                                ? ([["@repo/ui", "workspace:*"]] as const)
+                                                : []),
+                                            ...(assets
+                                                ? ([
+                                                      ["@repo/assets", "workspace:*"],
+                                                      [
+                                                          framework === "tanstack"
+                                                              ? "@unpic/react"
+                                                              : "@unpic/astro",
+                                                          "catalog:",
+                                                      ],
+                                                  ] as const)
+                                                : []),
+                                        ]);
 
-            if (ui && framework === "tanstack") {
-                packages.push("ui");
-                desired["@repo/ui"] = "workspace:*";
-            }
+                                        yield* Effect.forEach(
+                                            packages,
+                                            (name) =>
+                                                Effect.gen(function* () {
+                                                    const files = yield* resolvePackageIntegration(
+                                                        name,
+                                                        framework,
+                                                        {
+                                                            cwd,
+                                                            appDir: app,
+                                                            repoName:
+                                                                yield* defaultPackageName(cwd),
+                                                            stackName: "",
+                                                            owner: "",
+                                                            uiBase,
+                                                            features: new Set(),
+                                                        },
+                                                    );
 
-            if (assets) {
-                packages.push("assets");
-                desired["@repo/assets"] = "workspace:*";
-                desired[framework === "tanstack" ? "@unpic/react" : "@unpic/astro"] = "catalog:";
-            }
+                                                    yield* Effect.forEach(
+                                                        files,
+                                                        (file) => synchronizeManagedFile(cwd, file),
+                                                        { discard: true },
+                                                    );
+                                                }),
+                                            { discard: true },
+                                        );
 
-            if (packages.length === 0) continue;
+                                        yield* updatePackageJson(
+                                            appRoot,
+                                            ui && framework === "tanstack"
+                                                ? {
+                                                      dependencies: desired,
+                                                      imports: {
+                                                          "#components/*": "./src/components/*.tsx",
+                                                          "#lib/*": "./src/lib/*.ts",
+                                                      },
+                                                  }
+                                                : { dependencies: desired },
+                                        );
 
-            for (const name of packages) {
-                const files = yield* resolvePackageIntegration(name, framework, {
-                    cwd,
-                    appDir: app,
-                    repoName: yield* defaultPackageName(cwd),
-                    stackName: "",
-                    owner: "",
-                    uiBase,
-                    features: new Set(),
-                });
+                                        yield* Effect.gen(function* () {
+                                            const stylesheet = pathService.join(
+                                                appRoot,
+                                                "src/styles.css",
+                                            );
 
-                for (const file of files) yield* synchronizeManagedFile(cwd, file);
-            }
+                                            const content = (yield* fs.exists(stylesheet))
+                                                ? yield* fs.readFileString(stylesheet)
+                                                : "";
 
-            yield* updatePackageJson(
-                appRoot,
-                ui && framework === "tanstack"
-                    ? {
-                          dependencies: desired,
-                          imports: {
-                              "#components/*": "./src/components/*.tsx",
-                              "#lib/*": "./src/lib/*.ts",
-                          },
-                      }
-                    : { dependencies: desired },
-            );
+                                            const importRule =
+                                                '@import "@repo/ui/styles/globals.css";';
 
-            if (ui && framework === "tanstack") {
-                const stylesheet = pathService.join(appRoot, "src/styles.css");
+                                            yield* Effect.gen(function* () {
+                                                const localStyles = content.replace(
+                                                    /^@import\s+["']tailwindcss["'];\r?\n?/gm,
+                                                    "",
+                                                );
 
-                const content = (yield* fs.exists(stylesheet))
-                    ? yield* fs.readFileString(stylesheet)
-                    : "";
-
-                const importRule = '@import "@repo/ui/styles/globals.css";';
-
-                if (!/@import\s+["']@repo\/ui\/styles\/globals\.css["']/.test(content)) {
-                    const localStyles = content.replace(
-                        /^@import\s+["']tailwindcss["'];\r?\n?/gm,
-                        "",
-                    );
-
-                    yield* fs.writeFileString(stylesheet, `${importRule}\n${localStyles}`);
-                    yield* log.log(`[updated] apps/${app}/src/styles.css (shared UI import)`);
-                }
-            }
-        }
+                                                yield* fs.writeFileString(
+                                                    stylesheet,
+                                                    `${importRule}\n${localStyles}`,
+                                                );
+                                                yield* log.log(
+                                                    `[updated] apps/${app}/src/styles.css (shared UI import)`,
+                                                );
+                                            }).pipe(
+                                                Effect.when(
+                                                    Effect.succeed(
+                                                        !/@import\s+["']@repo\/ui\/styles\/globals\.css["']/.test(
+                                                            content,
+                                                        ),
+                                                    ),
+                                                ),
+                                            );
+                                        }).pipe(
+                                            Effect.when(
+                                                Effect.succeed(ui && framework === "tanstack"),
+                                            ),
+                                        );
+                                    }),
+                            }).pipe(Effect.when(Effect.succeed(packages.length > 0)));
+                        }),
+                    ).pipe(Effect.when(Effect.succeed(info.type === "Directory")));
+                }),
+            { discard: true },
+        );
     });
 
 /**

@@ -77,6 +77,17 @@ export default defineConfig({
             "effect/prefer-option-from-nullable": "error",
             "effect/require-context-service-in-services": "error",
         },
+        // bun:test callbacks and runner seams are legitimately async; tests also
+        // use node:fs/node:path directly for temp-dir setup.
+        overrides: [
+            {
+                files: ["src/**/*.test.ts"],
+                rules: {
+                    "effecttsgo/async-function": "off",
+                    "effecttsgo/node-builtin-import": "off",
+                },
+            },
+        ],
         ignorePatterns: [...ignorePatterns, "templates/**"],
     },
     fmt: {

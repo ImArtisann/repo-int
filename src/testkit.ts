@@ -44,5 +44,8 @@ export const run = <A, E, R>(
 
     // SAFETY: the merged layer provides every service the CLI modules require; the
     // residual R is erased because test callers only pass effects built on them.
-    return Effect.runPromise(Effect.provide(effect, layers) as Effect.Effect<A, E>);
+    return Effect.runPromise(
+        // oxlint-disable-next-line effecttsgo/unsafe-effect-type-assertion -- test seam: the merged layer covers every service CLI modules require
+        Effect.provide(effect, layers) as Effect.Effect<A, E>,
+    );
 };

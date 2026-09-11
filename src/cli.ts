@@ -506,8 +506,7 @@ export const runCli = (options: CliOptions = {}): Promise<number> => {
                     });
                 }),
         }),
-        Effect.provide(services),
-        Effect.provide(BunServices.layer),
+        Effect.provide(services.pipe(Layer.provideMerge(BunServices.layer))),
     );
 
     return Effect.runPromise(program);

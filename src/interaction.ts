@@ -23,6 +23,11 @@ interface InteractionInterface {
     >;
 }
 
+/**
+ * @effect-expect-leaking FileSystem | Path | Terminal
+ * The interactive layer resolves these at construction; the test seam
+ * (fromCallbacks) never touches them.
+ */
 export class Interaction extends Context.Service<Interaction, InteractionInterface>()(
     "repo-int/Interaction",
 ) {}
@@ -51,10 +56,8 @@ export const layer = (
                 // A directory name is never a destructive answer, so --yes still asks.
                 prompt: (question) =>
                     interactive
-                        ? Prompt.run(Prompt.String({ message: question })).pipe(
-                              Effect.map((answer) => Option.some(answer)),
-                          )
-                        : Effect.succeed(Option.none()),
+                        ? Prompt.run(Prompt.String({ message: question })).pipe(Effect.asSome)
+                        : Effect.succeedNone,
             };
         }),
     );
@@ -96,8 +99,8 @@ export const fromCallbacks = (
                     options.prompt !== undefined
                         ? Effect.promise(
                               () => options.prompt?.(question) ?? Promise.resolve(""),
-                          ).pipe(Effect.map((answer) => Option.some(answer)))
-                        : Effect.succeed(Option.none()),
+                          ).pipe(Effect.asSome)
+                        : Effect.succeedNone,
             };
         }),
     );

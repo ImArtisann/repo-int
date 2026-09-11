@@ -14,20 +14,18 @@ const REPOSITORY = "repo-int";
 export default Alchemy.Stack(
     "RepoIntGitHub",
     { providers: GitHub.providers(), state: Alchemy.localState() },
-    Effect.gen(function* () {
-        yield* GitHub.Repository("Repository", {
-            owner: OWNER,
-            name: REPOSITORY,
-            description:
-                "Scaffold a Bun + Vite+ monorepo with Effect tooling, Alchemy stacks, Convex/Confect, shadcn UI, R2 assets, TanStack Start, and Astro templates.",
-            visibility: "public",
-            hasWiki: false,
-            hasProjects: false,
-            hasDiscussions: false,
-            allowMergeCommit: false,
-            allowRebaseMerge: false,
-            allowSquashMerge: true,
-            deleteBranchOnMerge: true,
-        });
-    }),
+    GitHub.Repository("Repository", {
+        owner: OWNER,
+        name: REPOSITORY,
+        description:
+            "Scaffold a Bun + Vite+ monorepo with Effect tooling, Alchemy stacks, Convex/Confect, shadcn UI, R2 assets, TanStack Start, and Astro templates.",
+        visibility: "public",
+        hasWiki: false,
+        hasProjects: false,
+        hasDiscussions: false,
+        allowMergeCommit: false,
+        allowRebaseMerge: false,
+        allowSquashMerge: true,
+        deleteBranchOnMerge: true,
+    }).pipe(Effect.as(undefined)),
 );

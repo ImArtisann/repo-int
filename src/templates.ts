@@ -40,7 +40,8 @@ export interface TemplateContext {
  */
 export interface CatalogSpec {
     package: string;
-    spec: string | "effect" | "alchemy-peer";
+    /** A `bun pm view` spec, or a sentinel: "effect" resolves via EFFECT_MINIMUM, "alchemy-peer" copies the resolved alchemy version. */
+    spec: string;
 }
 
 export interface PostInstallCommand {
@@ -95,13 +96,10 @@ const templateTokens = (context: TemplateContext): ReadonlyMap<string, string> =
     ]);
 
 const substituteTokens = (value: string, tokens: ReadonlyMap<string, string>): string => {
-    let substituted = value;
-
-    for (const [token, replacement] of tokens) {
-        substituted = substituted.replaceAll(token, replacement);
-    }
-
-    return substituted;
+    return [...tokens].reduce(
+        (substituted, [token, replacement]) => substituted.replaceAll(token, replacement),
+        value,
+    );
 };
 
 /**
@@ -154,8 +152,9 @@ const loadTemplateDirectory = (
         const entries = yield* fs.readDirectory(pathService.join(root, directory));
         const sorted = entries.toSorted((left, right) => left.localeCompare(right));
 
-        const loaded = yield* Effect.all(
-            sorted.map((entry) =>
+        const loaded = yield* Effect.forEach(
+            sorted,
+            (entry) =>
                 Effect.gen(function* (): Effect.fn.Return<
                     Array<LoadedTemplate>,
                     PlatformError,
@@ -164,33 +163,36 @@ const loadTemplateDirectory = (
                     const source = directory === "" ? entry : `${directory}/${entry}`;
                     const info = yield* fs.stat(pathService.join(root, source));
 
-                    if (info.type === "Directory") {
-                        return yield* loadTemplateDirectory(
-                            root,
-                            source,
-                            tool,
-                            mapDestination,
-                            tokens,
-                            features,
-                        );
-                    }
-
-                    if (info.type !== "File") return [];
-                    const content = yield* fs.readFileString(pathService.join(root, source));
-
-                    return [
-                        {
-                            tool,
-                            destination: mapDestination(source),
-                            source,
-                            content: applyFeatureMarkers(
-                                substituteTokens(content, tokens),
+                    return yield* Match.value(info.type).pipe(
+                        Match.when("Directory", () =>
+                            loadTemplateDirectory(
+                                root,
+                                source,
+                                tool,
+                                mapDestination,
+                                tokens,
                                 features,
                             ),
-                        },
-                    ];
+                        ),
+                        Match.when("File", () =>
+                            Effect.map(
+                                fs.readFileString(pathService.join(root, source)),
+                                (content) => [
+                                    {
+                                        tool,
+                                        destination: mapDestination(source),
+                                        source,
+                                        content: applyFeatureMarkers(
+                                            substituteTokens(content, tokens),
+                                            features,
+                                        ),
+                                    },
+                                ],
+                            ),
+                        ),
+                        Match.orElse(() => Effect.succeed([])),
+                    );
                 }),
-            ),
             { concurrency: "unbounded" },
         );
 
@@ -207,9 +209,12 @@ const loadTemplateTree = (
     Effect.gen(function* () {
         const fs = yield* FileSystem;
 
-        if (!(yield* fs.exists(root))) return [];
-
-        return yield* loadTemplateDirectory(root, "", tool, mapDestination, tokens, features);
+        return yield* Match.value(yield* fs.exists(root)).pipe(
+            Match.when(false, () => Effect.succeed([])),
+            Match.orElse(() =>
+                loadTemplateDirectory(root, "", tool, mapDestination, tokens, features),
+            ),
+        );
     });
 
 /**
@@ -431,8 +436,9 @@ const sharedScaffold = (
             features,
         );
 
-        const present = yield* Effect.all(
-            files.map((file) => fs.exists(pathService.join(cwd, file.destination))),
+        const present = yield* Effect.forEach(
+            files,
+            (file) => fs.exists(pathService.join(cwd, file.destination)),
             { concurrency: "unbounded" },
         );
 
@@ -458,7 +464,7 @@ export const resolveTemplate = (
             context.features,
         );
 
-        if (name === "config" && context.features.has("xstate")) {
+        yield* Effect.gen(function* () {
             managed.push(
                 ...(yield* loadTemplateTree(
                     pathService.join(root, "variants", "xstate"),
@@ -468,7 +474,7 @@ export const resolveTemplate = (
                     context.features,
                 )),
             );
-        }
+        }).pipe(Effect.when(Effect.succeed(name === "config" && context.features.has("xstate"))));
 
         const scaffold = yield* loadTemplateTree(
             pathService.join(root, "scaffold"),
@@ -478,7 +484,7 @@ export const resolveTemplate = (
             context.features,
         );
 
-        if (name === "ui") {
+        yield* Effect.gen(function* () {
             scaffold.push(
                 ...(yield* loadTemplateTree(
                     pathService.join(root, "variants", context.uiBase ?? "radix"),
@@ -488,20 +494,20 @@ export const resolveTemplate = (
                     context.features,
                 )),
             );
-        }
+        }).pipe(Effect.when(Effect.succeed(name === "ui")));
 
         scaffold.push(
             ...(yield* sharedScaffold(name, mapDestination, tokens, context.features, context.cwd)),
         );
         const scaffoldFiles = scaffold.map((file) => ({ ...file, createOnly: true }));
 
-        const files = [...managed, ...scaffoldFiles].map((file) => {
-            if (file.destination === ".gitignore") return { ...file, mergeIgnorePatterns: true };
-
-            if (file.destination === ".coderabbit.yaml") return { ...file, mergePathFilters: true };
-
-            return file;
-        });
+        const files = [...managed, ...scaffoldFiles].map((file) =>
+            Match.value(file.destination).pipe(
+                Match.when(".gitignore", () => ({ ...file, mergeIgnorePatterns: true })),
+                Match.when(".coderabbit.yaml", () => ({ ...file, mergePathFilters: true })),
+                Match.orElse(() => file),
+            ),
+        );
 
         return {
             name,

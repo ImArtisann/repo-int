@@ -1,6 +1,7 @@
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Match from "effect/Match";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { CommandFailed, CommandUnavailable } from "./errors.ts";
@@ -95,13 +96,16 @@ export const fromFunction = (runner: CommandRunner): Layer.Layer<Runner> =>
 export const requireSuccess = (
     command: ReadonlyArray<string>,
     result: CommandResult,
-): Effect.Effect<CommandResult, CommandFailed> => {
-    if (result.exitCode === 0) return Effect.succeed(result);
-    const detail = result.stderr.trim() || result.stdout.trim();
+): Effect.Effect<CommandResult, CommandFailed> =>
+    Match.value(result.exitCode === 0).pipe(
+        Match.when(true, () => Effect.succeed(result)),
+        Match.orElse(() => {
+            const detail = result.stderr.trim() || result.stdout.trim();
 
-    return Effect.fail(
-        new CommandFailed({
-            message: `Command failed (${result.exitCode}): ${command.join(" ")}${detail ? `\n${detail}` : ""}`,
+            return Effect.fail(
+                new CommandFailed({
+                    message: `Command failed (${result.exitCode}): ${command.join(" ")}${detail ? `\n${detail}` : ""}`,
+                }),
+            );
         }),
     );
-};

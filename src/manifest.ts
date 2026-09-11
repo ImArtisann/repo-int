@@ -1,5 +1,6 @@
 import * as Effect from "effect/Effect";
 import { FileSystem } from "effect/FileSystem";
+import * as Match from "effect/Match";
 import * as Option from "effect/Option";
 import { Path } from "effect/Path";
 import type { PlatformError } from "effect/PlatformError";
@@ -53,21 +54,22 @@ export const loadPackageJson = (
             .exists(path)
             .pipe(Effect.mapError((error) => manifestError(path, error)));
 
-        if (!exists) return Option.none();
+        return yield* Match.value(exists).pipe(
+            Match.when(false, () => Effect.succeedNone),
+            Match.orElse(() =>
+                Effect.gen(function* () {
+                    const original = yield* fs.readFileString(path);
 
-        const original = yield* fs
-            .readFileString(path)
-            .pipe(Effect.mapError((error) => manifestError(path, error)));
+                    const raw = yield* Schema.decodeEffect(Schema.fromJsonString(JsonRecord))(
+                        original,
+                    );
 
-        const raw = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(JsonRecord))(
-            original,
-        ).pipe(Effect.mapError((error) => manifestError(path, error)));
+                    const fields = yield* Schema.decodeEffect(PackageJson)(raw);
 
-        const fields = yield* Schema.decodeUnknownEffect(PackageJson)(raw).pipe(
-            Effect.mapError((error) => manifestError(path, error)),
+                    return Option.some({ path, original, raw, fields });
+                }).pipe(Effect.mapError((error) => manifestError(path, error))),
+            ),
         );
-
-        return Option.some({ path, original, raw, fields });
     });
 
 export const savePackageJson = (
@@ -78,9 +80,9 @@ export const savePackageJson = (
         const eol = document.original.includes("\r\n") ? "\r\n" : "\n";
         const indentation = /\n([\t ]+)"/.exec(document.original)?.[1] ?? "    ";
 
-        const encoded = Schema.encodeSync(
+        const encoded = yield* Schema.encodeEffect(
             Schema.fromJsonString(JsonRecord, { space: indentation }),
-        )(document.raw);
+        )(document.raw).pipe(Effect.orDie);
 
         yield* fs.writeFileString(document.path, `${encoded.replaceAll("\n", eol)}${eol}`);
     });
@@ -99,17 +101,20 @@ export const readComponentsStyle = (
             .exists(file)
             .pipe(Effect.mapError((error) => manifestError(file, error)));
 
-        if (!exists) return Option.none();
+        return yield* Match.value(exists).pipe(
+            Match.when(false, () => Effect.succeedNone),
+            Match.orElse(() =>
+                Effect.gen(function* () {
+                    const text = yield* fs.readFileString(file);
 
-        const text = yield* fs
-            .readFileString(file)
-            .pipe(Effect.mapError((error) => manifestError(file, error)));
+                    const config = yield* Schema.decodeEffect(
+                        Schema.fromJsonString(ComponentsJson),
+                    )(text);
 
-        const config = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(ComponentsJson))(
-            text,
-        ).pipe(Effect.mapError((error) => manifestError(file, error)));
-
-        return Option.fromNullishOr(config.style);
+                    return Option.fromNullishOr(config.style);
+                }).pipe(Effect.mapError((error) => manifestError(file, error))),
+            ),
+        );
     });
 
 export const CodeRabbitConfig = Schema.Struct({

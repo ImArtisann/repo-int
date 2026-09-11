@@ -91,6 +91,17 @@ export default defineConfig({
             "xstate/no-single-use-xstate-guards": "error", // repo-int:xstate
             "xstate/require-xstate-event-satisfies": "error", // repo-int:xstate
         },
+        // bun:test callbacks and runner seams are legitimately async; tests also
+        // use node:fs/node:path directly for temp-dir setup.
+        overrides: [
+            {
+                files: ["**/*.test.ts", "**/*.test.tsx"],
+                rules: {
+                    "effecttsgo/async-function": "off",
+                    "effecttsgo/node-builtin-import": "off",
+                },
+            },
+        ],
         ignorePatterns,
     },
     fmt: {

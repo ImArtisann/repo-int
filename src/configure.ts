@@ -1,5 +1,6 @@
 import * as Effect from "effect/Effect";
 import { FileSystem } from "effect/FileSystem";
+import * as Match from "effect/Match";
 import * as Option from "effect/Option";
 import { Path } from "effect/Path";
 import * as Predicate from "effect/Predicate";
@@ -144,25 +145,16 @@ const insertCodeRabbitPathFilters = (text: string, patterns: ReadonlyArray<strin
 
     let blockEnd = lines.length;
 
-    for (let index = reviewsIndex + 1; index < lines.length; index += 1) {
-        const line = lines[index];
+    const firstTopLevel = lines.findIndex(
+        (line, index) => index > reviewsIndex && /^\S/.test(line),
+    );
 
-        if (line !== undefined && /^\S/.test(line)) {
-            blockEnd = index;
-            break;
-        }
-    }
+    if (firstTopLevel !== -1) blockEnd = firstTopLevel;
 
-    let pathFiltersIndex = -1;
-
-    for (let index = reviewsIndex + 1; index < blockEnd; index += 1) {
-        const line = lines[index];
-
-        if (line !== undefined && /^(\s*)path_filters:\s*$/.test(line)) {
-            pathFiltersIndex = index;
-            break;
-        }
-    }
+    const pathFiltersIndex = lines.findIndex(
+        (line, index) =>
+            index > reviewsIndex && index < blockEnd && /^(\s*)path_filters:\s*$/.test(line),
+    );
 
     if (pathFiltersIndex === -1) {
         lines.splice(
@@ -177,14 +169,12 @@ const insertCodeRabbitPathFilters = (text: string, patterns: ReadonlyArray<strin
 
     const pathFiltersLine = lines[pathFiltersIndex] ?? "";
     const indent = `${/^(\s*)path_filters:\s*$/.exec(pathFiltersLine)?.[1] ?? ""}    `;
-    let insertAt = pathFiltersIndex + 1;
 
-    while (insertAt < blockEnd) {
-        const line = lines[insertAt];
+    const firstNonItem = lines.findIndex(
+        (line, index) => index > pathFiltersIndex && index < blockEnd && !/^\s*- /.test(line),
+    );
 
-        if (line === undefined || !/^\s*- /.test(line)) break;
-        insertAt += 1;
-    }
+    const insertAt = firstNonItem === -1 ? blockEnd : firstNonItem;
 
     lines.splice(insertAt, 0, ...codeRabbitPathFilterItems(patterns, indent));
 
@@ -204,38 +194,52 @@ const mergePathFiltersIntoTemplate = (
         const log = yield* Log;
         const interaction = yield* Interaction;
         const existing = yield* fs.readFileString(destination);
-        let desired = template.content;
 
-        if (existing !== template.content) {
-            // Existing path filters are unioned into the template so re-running the config
-            // template never resets filters appended by other templates.
+        // Existing path filters are unioned into the template so re-running the config
+        // template never resets filters appended by other templates.
+        const desired = yield* Effect.gen(function* () {
             const templateFilters = yield* parseCodeRabbitPathFilters(template.content);
             const existingFilters = yield* parseCodeRabbitPathFilters(existing);
             const extras = existingFilters.filter((pattern) => !templateFilters.includes(pattern));
 
-            if (extras.length > 0) desired = insertCodeRabbitPathFilters(template.content, extras);
-        }
-
-        if (existing === desired) {
-            yield* log.log(`[unchanged] ${template.destination}`);
-
-            return "unchanged";
-        }
-
-        const accepted = yield* interaction.confirm(
-            `${template.destination} differs from the repo-int template. Overwrite it?`,
+            return extras.length === 0
+                ? template.content
+                : insertCodeRabbitPathFilters(template.content, extras);
+        }).pipe(
+            Effect.when(Effect.succeed(existing !== template.content)),
+            Effect.map(Option.getOrElse(() => template.content)),
         );
 
-        if (!accepted) {
-            yield* log.warn(`[kept] ${template.destination}`);
+        return yield* Match.value(existing === desired).pipe(
+            Match.when(true, () =>
+                log
+                    .log(`[unchanged] ${template.destination}`)
+                    .pipe(Effect.as("unchanged" as const)),
+            ),
+            Match.orElse(() =>
+                Effect.gen(function* () {
+                    const accepted = yield* interaction.confirm(
+                        `${template.destination} differs from the repo-int template. Overwrite it?`,
+                    );
 
-            return "skipped";
-        }
+                    return yield* Match.value(accepted).pipe(
+                        Match.when(false, () =>
+                            log
+                                .warn(`[kept] ${template.destination}`)
+                                .pipe(Effect.as("skipped" as const)),
+                        ),
+                        Match.orElse(() =>
+                            Effect.gen(function* () {
+                                yield* writeManagedFile(destination, desired);
+                                yield* log.log(`[updated] ${template.destination}`);
 
-        yield* writeManagedFile(destination, desired);
-        yield* log.log(`[updated] ${template.destination}`);
-
-        return "updated";
+                                return "updated" as const;
+                            }),
+                        ),
+                    );
+                }),
+            ),
+        );
     });
 
 export const synchronizeManagedFile = (
@@ -254,49 +258,66 @@ export const synchronizeManagedFile = (
         const destination = pathService.resolve(cwd, template.destination);
         const destinationExists = yield* fs.exists(destination);
 
-        if (template.mergeIgnorePatterns === true && destinationExists) {
-            return yield* mergeGitignorePatterns(destination, template);
-        }
+        return yield* Match.value({
+            mergeIgnore: template.mergeIgnorePatterns === true && destinationExists,
+            mergeFilters: template.mergePathFilters === true && destinationExists,
+            missing: !destinationExists,
+            createOnly: template.createOnly === true,
+        }).pipe(
+            Match.when({ mergeIgnore: true }, () => mergeGitignorePatterns(destination, template)),
+            Match.when({ mergeFilters: true }, () =>
+                mergePathFiltersIntoTemplate(destination, template),
+            ),
+            Match.when({ missing: true }, () =>
+                Effect.gen(function* () {
+                    yield* writeManagedFile(destination, template.content);
+                    yield* log.log(`[created] ${template.destination}`);
 
-        if (template.mergePathFilters === true && destinationExists) {
-            return yield* mergePathFiltersIntoTemplate(destination, template);
-        }
+                    return "created" as const;
+                }),
+            ),
+            Match.when({ createOnly: true }, () =>
+                log
+                    .log(`[unchanged] ${template.destination}`)
+                    .pipe(Effect.as("unchanged" as const)),
+            ),
+            Match.orElse(() =>
+                Effect.gen(function* () {
+                    const existing = yield* fs.readFileString(destination);
 
-        if (!destinationExists) {
-            yield* writeManagedFile(destination, template.content);
-            yield* log.log(`[created] ${template.destination}`);
+                    return yield* Match.value(existing === template.content).pipe(
+                        Match.when(true, () =>
+                            log
+                                .log(`[unchanged] ${template.destination}`)
+                                .pipe(Effect.as("unchanged" as const)),
+                        ),
+                        Match.orElse(() =>
+                            Effect.gen(function* () {
+                                const accepted = yield* interaction.confirm(
+                                    `${template.destination} differs from the repo-int template. Overwrite it?`,
+                                );
 
-            return "created";
-        }
+                                return yield* Match.value(accepted).pipe(
+                                    Match.when(false, () =>
+                                        log
+                                            .warn(`[kept] ${template.destination}`)
+                                            .pipe(Effect.as("skipped" as const)),
+                                    ),
+                                    Match.orElse(() =>
+                                        Effect.gen(function* () {
+                                            yield* writeManagedFile(destination, template.content);
+                                            yield* log.log(`[updated] ${template.destination}`);
 
-        if (template.createOnly === true) {
-            yield* log.log(`[unchanged] ${template.destination}`);
-
-            return "unchanged";
-        }
-
-        const existing = yield* fs.readFileString(destination);
-
-        if (existing === template.content) {
-            yield* log.log(`[unchanged] ${template.destination}`);
-
-            return "unchanged";
-        }
-
-        const accepted = yield* interaction.confirm(
-            `${template.destination} differs from the repo-int template. Overwrite it?`,
+                                            return "updated" as const;
+                                        }),
+                                    ),
+                                );
+                            }),
+                        ),
+                    );
+                }),
+            ),
         );
-
-        if (!accepted) {
-            yield* log.warn(`[kept] ${template.destination}`);
-
-            return "skipped";
-        }
-
-        yield* writeManagedFile(destination, template.content);
-        yield* log.log(`[updated] ${template.destination}`);
-
-        return "updated";
     });
 
 export const defaultPackageName = (cwd: string): Effect.Effect<string, never, Path> =>
@@ -320,39 +341,40 @@ const isMutableJsonObject = (
 const workspacesPackages = (
     path: string,
     workspaces: Schema.MutableJson,
-): Effect.Effect<Array<string>, ManifestError> => {
-    if (Array.isArray(workspaces)) {
-        if (!workspaces.every(Predicate.isString)) {
-            return Effect.fail(invalidField(path, 'has a non-string "workspaces" entry.'));
-        }
+): Effect.Effect<Array<string>, ManifestError> =>
+    Match.value(workspaces).pipe(
+        Match.when(Array.isArray, (entries) =>
+            entries.every(Predicate.isString)
+                ? Effect.succeed(entries)
+                : Effect.fail(invalidField(path, 'has a non-string "workspaces" entry.')),
+        ),
+        Match.when(isMutableJsonObject, (object) => {
+            // Object form; every member is validated before use and other keys are preserved.
+            const packages = object["packages"];
 
-        return Effect.succeed(workspaces);
-    }
+            return Match.value(packages).pipe(
+                Match.when(undefined, () =>
+                    Effect.sync(() => {
+                        const created: Array<string> = [];
+                        object["packages"] = created;
 
-    if (!isMutableJsonObject(workspaces)) {
-        return Effect.fail(invalidField(path, 'has an invalid "workspaces" field.'));
-    }
-
-    // Object form; every member is validated before use and other keys are preserved.
-    const packages = workspaces["packages"];
-
-    if (packages === undefined) {
-        const created: Array<string> = [];
-        workspaces["packages"] = created;
-
-        return Effect.succeed(created);
-    }
-
-    if (!Array.isArray(packages)) {
-        return Effect.fail(invalidField(path, 'has a non-array "workspaces.packages" field.'));
-    }
-
-    if (!packages.every(Predicate.isString)) {
-        return Effect.fail(invalidField(path, 'has a non-string "workspaces.packages" entry.'));
-    }
-
-    return Effect.succeed(packages);
-};
+                        return created;
+                    }),
+                ),
+                Match.when(Array.isArray, (entries) =>
+                    entries.every(Predicate.isString)
+                        ? Effect.succeed(entries)
+                        : Effect.fail(
+                              invalidField(path, 'has a non-string "workspaces.packages" entry.'),
+                          ),
+                ),
+                Match.orElse(() =>
+                    Effect.fail(invalidField(path, 'has a non-array "workspaces.packages" field.')),
+                ),
+            );
+        }),
+        Match.orElse(() => Effect.fail(invalidField(path, 'has an invalid "workspaces" field.'))),
+    );
 
 const mergeWorkspaces = (
     path: string,
@@ -361,20 +383,23 @@ const mergeWorkspaces = (
 ): Effect.Effect<boolean, ManifestError> => {
     const value = packageJson["workspaces"];
 
-    if (value === undefined) {
-        if (desired.length === 0) return Effect.succeed(false);
-        packageJson["workspaces"] = [...desired];
+    return Option.match(Option.fromNullishOr(value), {
+        onNone: () =>
+            Effect.sync(() => {
+                if (desired.length === 0) return false;
+                packageJson["workspaces"] = [...desired];
 
-        return Effect.succeed(true);
-    }
+                return true;
+            }),
+        onSome: (workspaces) =>
+            Effect.map(workspacesPackages(path, workspaces), (packages) => {
+                const missing = desired.filter((glob) => !packages.includes(glob));
 
-    return Effect.map(workspacesPackages(path, value), (packages) => {
-        const missing = desired.filter((glob) => !packages.includes(glob));
+                if (missing.length === 0) return false;
+                packages.push(...missing);
 
-        if (missing.length === 0) return false;
-        packages.push(...missing);
-
-        return true;
+                return true;
+            }),
     });
 };
 
@@ -397,25 +422,25 @@ const mergeCatalog = (
 
     const existing = target["catalog"];
 
-    if (existing === undefined) {
-        target["catalog"] = Object.fromEntries(entries);
+    return Match.value(existing).pipe(
+        Match.when(undefined, () =>
+            Effect.sync(() => {
+                target["catalog"] = Object.fromEntries(entries);
 
-        return Effect.succeed(true);
-    }
+                return true;
+            }),
+        ),
+        Match.when(isMutableJsonObject, (catalog) =>
+            Effect.sync(() => {
+                const missing = entries.filter(([name]) => catalog[name] === undefined);
 
-    if (existing === null || !isMutableJsonObject(existing)) {
-        return Effect.fail(invalidField(path, 'has a non-object "catalog" field.'));
-    }
+                for (const [name, version] of missing) catalog[name] = version;
 
-    let changed = false;
-
-    for (const [name, version] of entries) {
-        if (existing[name] !== undefined) continue;
-        existing[name] = version;
-        changed = true;
-    }
-
-    return Effect.succeed(changed);
+                return missing.length > 0;
+            }),
+        ),
+        Match.orElse(() => Effect.fail(invalidField(path, 'has a non-object "catalog" field.'))),
+    );
 };
 
 const PACKAGE_JSON_ENTRY_LABELS = {
@@ -444,44 +469,63 @@ const mergePackageJsonEntries = (
         const interaction = yield* Interaction;
         const value = packageJson[field];
 
-        if (value === undefined) {
-            if (Object.keys(desired).length === 0) return false;
-            packageJson[field] = { ...desired };
+        return yield* Match.value(value).pipe(
+            Match.when(undefined, () =>
+                Effect.sync(() => {
+                    if (Object.keys(desired).length === 0) return false;
+                    packageJson[field] = { ...desired };
 
-            return true;
-        }
+                    return true;
+                }),
+            ),
+            Match.when(isMutableJsonObject, (object) =>
+                Effect.gen(function* () {
+                    const label = PACKAGE_JSON_ENTRY_LABELS[field];
 
-        if (value === null || !isMutableJsonObject(value)) {
-            return yield* invalidField(path, `has a non-object "${field}" field.`);
-        }
+                    const changes = yield* Effect.forEach(
+                        Object.entries(desired),
+                        ([name, version]) =>
+                            Match.value(object[name]).pipe(
+                                Match.when(undefined, () =>
+                                    Effect.sync(() => {
+                                        object[name] = version;
 
-        const label = PACKAGE_JSON_ENTRY_LABELS[field];
-        let changed = false;
+                                        return true;
+                                    }),
+                                ),
+                                Match.when(version, () => Effect.succeed(false)),
+                                Match.orElse((existing) =>
+                                    Effect.gen(function* () {
+                                        const accepted = yield* interaction.confirm(
+                                            `package.json ${label} "${name}" differs from repo-int. Change it from ${jsonString(existing)} to ${jsonString(version)}?`,
+                                        );
 
-        for (const [name, version] of Object.entries(desired)) {
-            const existing = value[name];
+                                        return yield* Match.value(accepted).pipe(
+                                            Match.when(true, () =>
+                                                Effect.sync(() => {
+                                                    object[name] = version;
 
-            if (existing === undefined) {
-                value[name] = version;
-                changed = true;
-                continue;
-            }
+                                                    return true;
+                                                }),
+                                            ),
+                                            Match.orElse(() =>
+                                                log
+                                                    .warn(`[kept] package.json ${label} "${name}"`)
+                                                    .pipe(Effect.as(false)),
+                                            ),
+                                        );
+                                    }),
+                                ),
+                            ),
+                    );
 
-            if (existing === version) continue;
-
-            const accepted = yield* interaction.confirm(
-                `package.json ${label} "${name}" differs from repo-int. Change it from ${jsonString(existing)} to ${jsonString(version)}?`,
-            );
-
-            if (accepted) {
-                value[name] = version;
-                changed = true;
-            } else {
-                yield* log.warn(`[kept] package.json ${label} "${name}"`);
-            }
-        }
-
-        return changed;
+                    return changes.some(Boolean);
+                }),
+            ),
+            Match.orElse(() =>
+                Effect.fail(invalidField(path, `has a non-object "${field}" field.`)),
+            ),
+        );
     });
 
 export const updatePackageJson = (
@@ -508,44 +552,64 @@ export const updatePackageJson = (
                   type: "module",
               };
 
-        let changed = !exists;
+        const packageManagerChanged = yield* Option.match(
+            Option.fromNullishOr(desired.packageManager),
+            {
+                onNone: () => Effect.succeed(false),
+                onSome: (packageManager) =>
+                    Effect.sync(() => {
+                        if (packageJson["packageManager"] !== undefined) return false;
+                        packageJson["packageManager"] = packageManager;
 
-        if (desired.packageManager !== undefined && packageJson["packageManager"] === undefined) {
-            packageJson["packageManager"] = desired.packageManager;
-            changed = true;
-        }
+                        return true;
+                    }),
+            },
+        );
 
-        if (desired.workspaces !== undefined) {
-            changed = (yield* mergeWorkspaces(path, packageJson, desired.workspaces)) || changed;
-        }
-
-        if (desired.catalog !== undefined) {
-            changed = (yield* mergeCatalog(path, packageJson, desired.catalog)) || changed;
-        }
-
-        for (const field of ["dependencies", "devDependencies", "scripts", "imports"] as const) {
-            const entries = desired[field];
-
-            if (entries === undefined) continue;
-            changed =
-                (yield* mergePackageJsonEntries(path, packageJson, field, entries)) || changed;
-        }
-
-        if (!changed) {
-            yield* log.log("[unchanged] package.json");
-
-            return "unchanged";
-        }
-
-        yield* savePackageJson({
-            path,
-            original: exists ? document.value.original : "",
-            raw: packageJson,
+        const workspacesChanged = yield* Option.match(Option.fromNullishOr(desired.workspaces), {
+            onNone: () => Effect.succeed(false),
+            onSome: (workspaces) => mergeWorkspaces(path, packageJson, workspaces),
         });
-        const status: FileStatus = exists ? "updated" : "created";
-        yield* log.log(`[${status}] package.json`);
 
-        return status;
+        const catalogChanged = yield* Option.match(Option.fromNullishOr(desired.catalog), {
+            onNone: () => Effect.succeed(false),
+            onSome: (catalog) => mergeCatalog(path, packageJson, catalog),
+        });
+
+        const entryChanges = yield* Effect.forEach(
+            ["dependencies", "devDependencies", "scripts", "imports"] as const,
+            (field) =>
+                Option.match(Option.fromNullishOr(desired[field]), {
+                    onNone: () => Effect.succeed(false),
+                    onSome: (entries) => mergePackageJsonEntries(path, packageJson, field, entries),
+                }),
+        );
+
+        const changed =
+            !exists ||
+            packageManagerChanged ||
+            workspacesChanged ||
+            catalogChanged ||
+            entryChanges.some(Boolean);
+
+        return yield* Match.value(changed).pipe(
+            Match.when(false, () =>
+                log.log("[unchanged] package.json").pipe(Effect.as("unchanged" as const)),
+            ),
+            Match.orElse(() =>
+                Effect.gen(function* () {
+                    yield* savePackageJson({
+                        path,
+                        original: exists ? document.value.original : "",
+                        raw: packageJson,
+                    });
+                    const status: FileStatus = exists ? "updated" : "created";
+                    yield* log.log(`[${status}] package.json`);
+
+                    return status;
+                }),
+            ),
+        );
     });
 
 export const mergeCodeRabbitPathFilters = (
@@ -558,41 +622,56 @@ export const mergeCodeRabbitPathFilters = (
         const log = yield* Log;
         const destination = pathService.resolve(cwd, ".coderabbit.yaml");
 
-        if (!(yield* fs.exists(destination))) {
-            const content = [
-                "reviews:",
-                "    path_filters:",
-                ...codeRabbitPathFilterItems(patterns, "        "),
-            ].join("\n");
+        return yield* Match.value(yield* fs.exists(destination)).pipe(
+            Match.when(false, () =>
+                Effect.gen(function* () {
+                    const content = [
+                        "reviews:",
+                        "    path_filters:",
+                        ...codeRabbitPathFilterItems(patterns, "        "),
+                    ].join("\n");
 
-            yield* writeManagedFile(destination, `${content}\n`);
-            yield* log.log("[created] .coderabbit.yaml");
+                    yield* writeManagedFile(destination, `${content}\n`);
+                    yield* log.log("[created] .coderabbit.yaml");
 
-            return "created";
-        }
+                    return "created" as const;
+                }),
+            ),
+            Match.orElse(() =>
+                Effect.gen(function* () {
+                    const original = yield* fs.readFileString(destination);
+                    const existing = yield* parseCodeRabbitPathFiltersStrict(original);
+                    const missing = patterns.filter((pattern) => !existing.includes(pattern));
 
-        const original = yield* fs.readFileString(destination);
-        const existing = yield* parseCodeRabbitPathFiltersStrict(original);
-        const missing = patterns.filter((pattern) => !existing.includes(pattern));
+                    return yield* Match.value(missing.length === 0).pipe(
+                        Match.when(true, () =>
+                            log
+                                .log("[unchanged] .coderabbit.yaml")
+                                .pipe(Effect.as("unchanged" as const)),
+                        ),
+                        Match.orElse(() =>
+                            Effect.gen(function* () {
+                                const merged = insertCodeRabbitPathFilters(original, missing);
+                                const persisted = yield* parseCodeRabbitPathFiltersStrict(merged);
 
-        if (missing.length === 0) {
-            yield* log.log("[unchanged] .coderabbit.yaml");
+                                const absent = patterns.filter(
+                                    (pattern) => !persisted.includes(pattern),
+                                );
 
-            return "unchanged";
-        }
+                                yield* Effect.fail(
+                                    new ManifestError({
+                                        message: `.coderabbit.yaml merge failed for: ${absent.join(", ")}`,
+                                    }),
+                                ).pipe(Effect.when(Effect.succeed(absent.length > 0)));
 
-        const merged = insertCodeRabbitPathFilters(original, missing);
-        const persisted = yield* parseCodeRabbitPathFiltersStrict(merged);
-        const absent = patterns.filter((pattern) => !persisted.includes(pattern));
+                                yield* fs.writeFileString(destination, merged);
+                                yield* log.log("[updated] .coderabbit.yaml");
 
-        if (absent.length > 0) {
-            return yield* new ManifestError({
-                message: `.coderabbit.yaml merge failed for: ${absent.join(", ")}`,
-            });
-        }
-
-        yield* fs.writeFileString(destination, merged);
-        yield* log.log("[updated] .coderabbit.yaml");
-
-        return "updated";
+                                return "updated" as const;
+                            }),
+                        ),
+                    );
+                }),
+            ),
+        );
     });
