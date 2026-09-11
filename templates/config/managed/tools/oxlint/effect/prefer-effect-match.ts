@@ -1,11 +1,9 @@
-import type { RuleTester } from "oxlint/plugins-dev";
+import { defineRule } from "@oxlint/plugins";
+import type { ESTree } from "@oxlint/plugins";
 
-type Rule = Parameters<RuleTester["run"]>[1];
-type VisitorObject = ReturnType<NonNullable<Rule["create"]>>;
-type ConditionalExpressionNode = Parameters<NonNullable<VisitorObject["ConditionalExpression"]>>[0];
-type ExpressionNode = ConditionalExpressionNode["alternate"];
+type ExpressionNode = ESTree.ConditionalExpression["alternate"];
 type BinaryExpressionNode = Extract<
-    ConditionalExpressionNode["test"],
+    ESTree.ConditionalExpression["test"],
     { type: "BinaryExpression" }
 >;
 
@@ -16,7 +14,7 @@ const getComparedValue = ({
     node,
     getText,
 }: {
-    node: ConditionalExpressionNode["test"];
+    node: ESTree.ConditionalExpression["test"];
     getText: (node: ExpressionNode) => string;
 }) => {
     if (
@@ -41,11 +39,14 @@ const getComparedValue = ({
     return undefined;
 };
 
-const rule: Rule = {
+const rule = defineRule({
     meta: {
-        type: "problem" as const,
+        type: "problem",
         docs: {
             description: "Use Match from effect for chained literal ternaries over the same value.",
+        },
+        messages: {
+            preferMatch: "Use Match from effect instead of a chained literal ternary.",
         },
     },
     create(context) {
@@ -87,12 +88,12 @@ const rule: Rule = {
                 if (literalChecks > 1) {
                     context.report({
                         node,
-                        message: "Use Match from effect instead of a chained literal ternary.",
+                        messageId: "preferMatch",
                     });
                 }
             },
         };
     },
-};
+});
 
 export default rule;

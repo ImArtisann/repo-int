@@ -69,6 +69,16 @@ This creates `apps/dashboard`. Use a single directory name, not a path. `--yes`
 does not authorize replacing an unrelated app. Use the same `--app-dir` value to
 rerun the template for that app.
 
+Pass `--xstate` with `config` to add the XState Oxlint rules under
+`tools/oxlint/xstate/` and enable them in `vite.config.ts`:
+
+```bash
+bun x @artisann-studios/repo-int config --xstate --owner ImArtisann --yes
+```
+
+The flag requires the `config` template and can be applied to an existing
+workspace by rerunning `config` with it.
+
 Package integrations work in either order: add `ui` and `assets` to existing
 apps, or create the packages before adding frontend templates. repo-int checks
 the dependencies of each `apps/*` workspace to select its integration. Unrelated
@@ -262,11 +272,13 @@ component. For metadata URLs, use
 
 ## Develop and publish
 
-repo-int itself retains its existing Bun/Oxlint/Oxfmt/Husky toolchain:
+repo-int runs the same toolchain it installs — Vite+ (`vp check`), lefthook
+hooks, and Effect tooling:
 
 ```bash
 bun install
 bun run check
+bun run test
 ```
 
 Repository tests are scoped to `src`; Confect's template `notes.spec.ts` defines

@@ -1,12 +1,7 @@
-import type { RuleTester } from "oxlint/plugins-dev";
+import { defineRule } from "@oxlint/plugins";
+import type { ESTree } from "@oxlint/plugins";
 
-type Rule = Parameters<RuleTester["run"]>[1];
-type VisitorObject = ReturnType<NonNullable<Rule["create"]>>;
-type CallExpressionNode = Parameters<NonNullable<VisitorObject["CallExpression"]>>[0];
-type ExpressionNode = CallExpressionNode["callee"] | CallExpressionNode["arguments"][number];
-
-const message =
-    "Do not silently swallow Effect errors with Effect.void or Effect.unit. Recover meaningfully, transform the error, or let it propagate.";
+type ExpressionNode = ESTree.CallExpression["callee"] | ESTree.CallExpression["arguments"][number];
 
 const isEffectMember = ({
     methodKind,
@@ -70,12 +65,16 @@ const returnsOnlyVoid = ({ node }: { node: ExpressionNode }) => {
     );
 };
 
-const rule: Rule = {
+const rule = defineRule({
     meta: {
-        type: "problem" as const,
+        type: "problem",
         docs: {
             description:
                 "Do not silently swallow Effect errors; recover, transform, or propagate them.",
+        },
+        messages: {
+            silentErrorSwallow:
+                "Do not silently swallow Effect errors with Effect.void or Effect.unit. Recover meaningfully, transform the error, or let it propagate.",
         },
     },
     create(context) {
@@ -94,7 +93,7 @@ const rule: Rule = {
                     if (returnsOnlyVoid({ node: argument })) {
                         context.report({
                             node,
-                            message,
+                            messageId: "silentErrorSwallow",
                         });
                     }
 
@@ -109,7 +108,7 @@ const rule: Rule = {
                         ) {
                             context.report({
                                 node,
-                                message,
+                                messageId: "silentErrorSwallow",
                             });
                         }
                     }
@@ -117,6 +116,6 @@ const rule: Rule = {
             },
         };
     },
-};
+});
 
 export default rule;

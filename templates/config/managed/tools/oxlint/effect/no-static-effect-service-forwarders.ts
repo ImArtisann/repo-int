@@ -1,23 +1,15 @@
-import type { RuleTester } from "oxlint/plugins-dev";
+import { defineRule } from "@oxlint/plugins";
+import type { ESTree } from "@oxlint/plugins";
 
-type Rule = Parameters<RuleTester["run"]>[1];
-type VisitorObject = ReturnType<NonNullable<Rule["create"]>>;
-type CallExpressionNode = Parameters<NonNullable<VisitorObject["CallExpression"]>>[0];
-type ImportDeclarationNode = Parameters<NonNullable<VisitorObject["ImportDeclaration"]>>[0];
-type IdentifierNode = Parameters<NonNullable<VisitorObject["Identifier"]>>[0];
+type CallExpressionNode = ESTree.CallExpression;
+type ImportDeclarationNode = ESTree.ImportDeclaration;
+type IdentifierNode = ESTree.IdentifierReference;
 type ExpressionCandidate =
     | CallExpressionNode
     | CallExpressionNode["arguments"][number]
     | CallExpressionNode["callee"]
     | undefined;
-type ArrowFunctionExpressionNode = Parameters<
-    NonNullable<VisitorObject["ArrowFunctionExpression"]>
->[0];
-type FunctionExpressionNode = Parameters<NonNullable<VisitorObject["FunctionExpression"]>>[0];
-type CallbackNode = ArrowFunctionExpressionNode | FunctionExpressionNode;
-
-const message =
-    "Do not expose an Effect service method through a static forwarder. Yield the service at the usage site and call the method directly.";
+type CallbackNode = ESTree.ArrowFunctionExpression | ESTree.Function;
 
 const importedName = ({ specifier }: { specifier: ImportDeclarationNode["specifiers"][number] }) =>
     specifier.type === "ImportSpecifier"
@@ -94,12 +86,16 @@ const isDirectParameterMember = ({
     );
 };
 
-const rule: Rule = {
+const rule = defineRule({
     meta: {
-        type: "problem" as const,
+        type: "problem",
         docs: {
             description:
                 "Disallow static Effect service method forwarders; acquire the service where its method is used.",
+        },
+        messages: {
+            staticServiceForwarder:
+                "Do not expose an Effect service method through a static forwarder. Yield the service at the usage site and call the method directly.",
         },
     },
     create(context) {
@@ -244,7 +240,7 @@ const rule: Rule = {
                     isServiceThisCall({ node: node.arguments[0] }) &&
                     isForwardingFlatMap({ node })
                 ) {
-                    context.report({ message, node });
+                    context.report({ messageId: "staticServiceForwarder", node });
                     return;
                 }
 
@@ -265,11 +261,11 @@ const rule: Rule = {
                     isServiceThisCall({ node: pipedEffect }) &&
                     operators.some((operator) => isForwardingFlatMap({ node: operator }))
                 ) {
-                    context.report({ message, node });
+                    context.report({ messageId: "staticServiceForwarder", node });
                 }
             },
         };
     },
-};
+});
 
 export default rule;

@@ -27,11 +27,13 @@ const MANIFEST: Readonly<Record<string, AssetEntry | undefined>> = ASSET_MANIFES
 
 function entry(path: AssetPath): AssetEntry {
     const found = MANIFEST[path];
+
     if (found === undefined) {
         throw new Error(
             `Unknown asset ${String(path)}: run \`bun run generate\` in packages/assets`,
         );
     }
+
     return found;
 }
 
@@ -47,11 +49,13 @@ export function assetSrc(path: AssetPath): string {
 
 export function assetDimensions(path: AssetPath): AssetDimensions {
     const { width, height } = entry(path);
+
     return { width, height };
 }
 
 export function assetImageProps(path: AssetPath): AssetImageProps {
     const { key, width, height } = entry(path);
+
     return { src: `/${key.split("/").map(encodeURIComponent).join("/")}`, width, height };
 }
 
@@ -76,7 +80,9 @@ export function assetUrl(path: AssetPath, origin: string): string {
  */
 export function resolveAssetPath(value: string): AssetPath | undefined {
     const path = value.startsWith("/") ? value.slice(1) : value;
+
     if (!Object.hasOwn(ASSET_MANIFEST, path)) return undefined;
+
     // SAFETY: the own-key check establishes path as a manifest key.
     return path as AssetPath;
 }
@@ -84,8 +90,10 @@ export function resolveAssetPath(value: string): AssetPath | undefined {
 /** Same lookup, but a missing asset is a bug rather than an omitted image. */
 export function requireAssetPath(value: string): AssetPath {
     const path = resolveAssetPath(value);
+
     if (path === undefined) {
         throw new Error(`Unknown asset ${value}: add it under packages/assets/images/`);
     }
+
     return path;
 }

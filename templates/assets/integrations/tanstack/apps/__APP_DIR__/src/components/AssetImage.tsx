@@ -24,10 +24,12 @@ type AssetImageProps = Omit<
 
 export function AssetImage({ asset, width, alt, ...props }: AssetImageProps) {
     const host = import.meta.env.VITE_ASSETS_HOST;
+
     if (!host) throw new Error("Set VITE_ASSETS_HOST in the app's .env to your R2 custom domain.");
     const dimensions = assetDimensions(asset);
     const displayWidth = width ?? dimensions.width;
     const transform = import.meta.env.VITE_ASSETS_TRANSFORM === "true";
+
     return (
         <Image
             {...props}

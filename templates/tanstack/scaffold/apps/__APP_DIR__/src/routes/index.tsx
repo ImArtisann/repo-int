@@ -16,6 +16,7 @@ export const Route = createFileRoute("/")({
 
 function Home() {
     const greeting = Route.useLoaderData();
+
     return (
         <main>
             <h1 className="text-3xl font-bold">{greeting}</h1>

@@ -1,14 +1,16 @@
-import type { RuleTester } from "oxlint/plugins-dev";
-
-type Rule = Parameters<RuleTester["run"]>[1];
+import { defineRule } from "@oxlint/plugins";
 
 const standardArrayMethods = new Set(["from", "isArray", "of"]);
 
-const rule: Rule = {
+const rule = defineRule({
     meta: {
-        type: "problem" as const,
+        type: "problem",
         docs: {
             description: "Require globalThis.Array when Array is imported from effect.",
+        },
+        messages: {
+            shadowedArrayStatic:
+                "Array is imported from effect in this file. Use globalThis.Array for standard Array static APIs.",
         },
     },
     create(context) {
@@ -48,13 +50,12 @@ const rule: Rule = {
                 ) {
                     context.report({
                         node,
-                        message:
-                            "Array is imported from effect in this file. Use globalThis.Array for standard Array static APIs.",
+                        messageId: "shadowedArrayStatic",
                     });
                 }
             },
         };
     },
-};
+});
 
 export default rule;

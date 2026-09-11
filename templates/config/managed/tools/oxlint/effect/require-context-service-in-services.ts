@@ -1,10 +1,7 @@
-import type { RuleTester } from "oxlint/plugins-dev";
+import { defineRule } from "@oxlint/plugins";
+import type { ESTree } from "@oxlint/plugins";
 
-type Rule = Parameters<RuleTester["run"]>[1];
-type VisitorObject = ReturnType<NonNullable<Rule["create"]>>;
-type ClassDeclarationNode = Parameters<NonNullable<VisitorObject["ClassDeclaration"]>>[0];
-type ClassExpressionNode = Parameters<NonNullable<VisitorObject["ClassExpression"]>>[0];
-type ServiceSuperClass = NonNullable<ClassDeclarationNode["superClass"]>;
+type ServiceSuperClass = NonNullable<ESTree.Class["superClass"]>;
 
 const isStringArray = (value: unknown): value is Array<string> =>
     Array.isArray(value) &&
@@ -39,12 +36,16 @@ const isContextService = ({ node }: { node: ServiceSuperClass | null }): boolean
     return false;
 };
 
-const rule: Rule = {
+const rule = defineRule({
     meta: {
-        type: "problem" as const,
+        type: "problem",
         docs: {
             description:
                 "Require production modules in services folders to define a class extending Context.Service.",
+        },
+        messages: {
+            missingContextService:
+                "Files inside services folders must define a class extending Context.Service.",
         },
         schema: [
             {
@@ -108,7 +109,7 @@ const rule: Rule = {
         let hasClassImplementation = false;
 
         return {
-            ClassDeclaration(node: ClassDeclarationNode) {
+            ClassDeclaration(node) {
                 hasClassImplementation = true;
                 if (
                     isContextService({
@@ -118,7 +119,7 @@ const rule: Rule = {
                     definesContextService = true;
                 }
             },
-            ClassExpression(node: ClassExpressionNode) {
+            ClassExpression(node) {
                 hasClassImplementation = true;
                 if (isContextService({ node: node.superClass })) {
                     definesContextService = true;
@@ -131,12 +132,11 @@ const rule: Rule = {
 
                 context.report({
                     node,
-                    message:
-                        "Files inside services folders must define a class extending Context.Service.",
+                    messageId: "missingContextService",
                 });
             },
         };
     },
-};
+});
 
 export default rule;

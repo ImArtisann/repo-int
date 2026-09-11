@@ -1,13 +1,11 @@
-import type { RuleTester } from "oxlint/plugins-dev";
+import { defineRule } from "@oxlint/plugins";
+import type { ESTree } from "@oxlint/plugins";
 
-type Rule = Parameters<RuleTester["run"]>[1];
-type VisitorObject = ReturnType<NonNullable<Rule["create"]>>;
-type ConditionalExpressionNode = Parameters<NonNullable<VisitorObject["ConditionalExpression"]>>[0];
 type BinaryExpressionNode = Extract<
-    ConditionalExpressionNode["test"],
+    ESTree.ConditionalExpression["test"],
     { type: "BinaryExpression" }
 >;
-type ExpressionNode = ConditionalExpressionNode["consequent"];
+type ExpressionNode = ESTree.ConditionalExpression["consequent"];
 
 const isNullLiteral = (node: BinaryExpressionNode["left"]) =>
     node.type === "Literal" && node.value === null && node.raw === "null";
@@ -34,12 +32,16 @@ const getOptionMemberCall = ({ name, node }: { name: string; node: ExpressionNod
         : undefined;
 };
 
-const rule: Rule = {
+const rule = defineRule({
     meta: {
-        type: "problem" as const,
+        type: "problem",
         docs: {
             description:
                 "Use Option.fromNullable instead of ternaries that choose between Option.some and Option.none.",
+        },
+        messages: {
+            preferFromNullable:
+                "Use Option.fromNullable instead of a nullable ternary with Option.some and Option.none.",
         },
     },
     create(context) {
@@ -83,12 +85,11 @@ const rule: Rule = {
 
                 context.report({
                     node,
-                    message:
-                        "Use Option.fromNullable instead of a nullable ternary with Option.some and Option.none.",
+                    messageId: "preferFromNullable",
                 });
             },
         };
     },
-};
+});
 
 export default rule;

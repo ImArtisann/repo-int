@@ -5,6 +5,7 @@ import Card from "../components/Card.astro";
 // Server-rendered on every request inside the Cloudflare Worker.
 // Bindings declared in alchemy.run.ts are typed through src/env.d.ts.
 const greeting = Astro.locals.runtime.env.GREETING;
+
 const now = new Date().toISOString();
 ---
 

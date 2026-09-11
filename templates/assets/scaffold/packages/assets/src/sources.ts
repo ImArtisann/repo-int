@@ -28,6 +28,7 @@ export const sourceDirectory = Bun.fileURLToPath(
 export function hashedKey(path: string, data: Uint8Array): string {
     const digest = new Bun.CryptoHasher("sha256").update(data).digest("hex").slice(0, 16);
     const dot = path.lastIndexOf(".");
+
     return `${path.slice(0, dot)}.${digest}${path.slice(dot)}`;
 }
 
@@ -37,6 +38,7 @@ export function hashedKey(path: string, data: Uint8Array): string {
  */
 export async function collectAssets(): Promise<CollectedAsset[]> {
     const paths: string[] = [];
+
     for await (const relativePath of new Bun.Glob("**/*").scan({
         cwd: sourceDirectory,
         onlyFiles: true,
@@ -47,8 +49,10 @@ export async function collectAssets(): Promise<CollectedAsset[]> {
     }
 
     const collected: CollectedAsset[] = [];
+
     for (const path of paths.toSorted()) {
         const extension = path.slice(path.lastIndexOf(".")).toLowerCase();
+
         if (!Object.hasOwn(ASSET_CONTENT_TYPES, extension)) {
             throw new Error(
                 `Unsupported asset images/${path}: accepted extensions are ${Object.keys(
@@ -56,15 +60,18 @@ export async function collectAssets(): Promise<CollectedAsset[]> {
                 ).join(", ")}`,
             );
         }
+
         // SAFETY: the own-key check above narrows extension to a declared key.
         const contentType = ASSET_CONTENT_TYPES[extension as keyof typeof ASSET_CONTENT_TYPES];
 
         const file = join(sourceDirectory, path);
         const data = await Bun.file(file).bytes();
         const { width, height, orientation } = imageSize(data);
+
         if (!(width > 0 && height > 0)) {
             throw new Error(`Image images/${path} must have positive intrinsic dimensions.`);
         }
+
         // EXIF orientations 5-8 rotate a quarter turn, so the displayed image is
         // the stored one transposed.
         const transposed = orientation !== undefined && orientation >= 5 && orientation <= 8;

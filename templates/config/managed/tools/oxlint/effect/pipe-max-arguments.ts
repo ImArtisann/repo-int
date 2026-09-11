@@ -1,15 +1,17 @@
-import type { RuleTester } from "oxlint/plugins-dev";
-
-type Rule = Parameters<RuleTester["run"]>[1];
+import { defineRule } from "@oxlint/plugins";
 
 const maxPipeArguments = 20;
 
-const rule: Rule = {
+const rule = defineRule({
     meta: {
-        type: "problem" as const,
+        type: "problem",
         docs: {
             description:
                 "Limit pipe calls to 20 arguments; split longer pipelines into named steps.",
+        },
+        messages: {
+            tooManyArguments:
+                "This pipe has too many arguments. Split it into smaller named steps.",
         },
     },
     create(context) {
@@ -23,13 +25,12 @@ const rule: Rule = {
                 ) {
                     context.report({
                         node,
-                        message:
-                            "This pipe has too many arguments. Split it into smaller named steps.",
+                        messageId: "tooManyArguments",
                     });
                 }
             },
         };
     },
-};
+});
 
 export default rule;

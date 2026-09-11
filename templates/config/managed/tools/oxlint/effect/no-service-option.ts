@@ -1,10 +1,5 @@
+import { defineRule } from "@oxlint/plugins";
 import type { ESTree, Scope, SourceCode } from "@oxlint/plugins";
-import type { RuleTester } from "oxlint/plugins-dev";
-
-type Rule = Parameters<RuleTester["run"]>[1];
-
-const message =
-    "Do not use Effect.serviceOption. Require the service directly and provide it in the layer.";
 
 const findImportDefinition = ({
     node,
@@ -71,12 +66,16 @@ const isImportedEffectNamespace = ({
     );
 };
 
-const rule: Rule = {
+const rule = defineRule({
     meta: {
-        type: "problem" as const,
+        type: "problem",
         docs: {
             description:
                 "Avoid Effect.serviceOption; require the service directly and provide it in the layer.",
+        },
+        messages: {
+            serviceOption:
+                "Do not use Effect.serviceOption. Require the service directly and provide it in the layer.",
         },
     },
     create(context) {
@@ -90,7 +89,7 @@ const rule: Rule = {
                 ) {
                     context.report({
                         node,
-                        message,
+                        messageId: "serviceOption",
                     });
                 }
             },
@@ -113,11 +112,11 @@ const rule: Rule = {
 
                 context.report({
                     node,
-                    message,
+                    messageId: "serviceOption",
                 });
             },
         };
     },
-};
+});
 
 export default rule;

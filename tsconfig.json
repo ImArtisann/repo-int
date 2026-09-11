@@ -1,5 +1,12 @@
 {
-    "include": ["index.ts", "src/**/*.ts", "templates/config/managed/tools/**/*.ts"],
+    "include": [
+        "index.ts",
+        "vite.config.ts",
+        "src/**/*.ts",
+        "stacks/**/*.ts",
+        "templates/config/managed/tools/**/*.ts",
+        "templates/config/variants/xstate/tools/**/*.ts"
+    ],
     "compilerOptions": {
         // Environment setup & latest features
         "lib": ["ESNext"],
@@ -14,7 +21,10 @@
         "moduleResolution": "bundler",
         "allowImportingTsExtensions": true,
         "verbatimModuleSyntax": true,
+        "resolveJsonModule": true,
+        "isolatedModules": true,
         "noEmit": true,
+        "plugins": [{ "name": "@effect/language-service", "diagnostics": false }],
 
         // Best practices
         "strict": true,

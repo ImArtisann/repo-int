@@ -1,4 +1,6 @@
-import { requireSuccess, type CommandRunner } from "./process.ts";
+import * as Effect from "effect/Effect";
+import { CommandFailed, CommandUnavailable, WorkspaceError } from "./errors.ts";
+import { requireSuccess, Runner } from "./runner.ts";
 
 /**
  * Mutually compatible toolchain pins; bump them together or not at all.
@@ -16,48 +18,56 @@ export const TOOLCHAIN = {
 /** Peer range alchemy 2.0.0-beta declares for effect. */
 export const EFFECT_MINIMUM = ">=4.0.0-rc.112";
 
-async function viewVersion(runner: CommandRunner, cwd: string, spec: string): Promise<string> {
-    const command: readonly string[] = [process.execPath, "pm", "view", spec, "version"];
-    const result = await runner(command, { cwd, stdio: "capture" });
-    requireSuccess(command, result);
-    const version = result.stdout.trim();
-    if (version === "") throw new Error(`bun pm view ${spec} version returned no version.`);
-    return version;
-}
+type VersionError = WorkspaceError | CommandFailed | CommandUnavailable;
+
+const viewVersion = (cwd: string, spec: string): Effect.Effect<string, VersionError, Runner> =>
+    Effect.gen(function* () {
+        const runner = yield* Runner;
+        const command: ReadonlyArray<string> = [process.execPath, "pm", "view", spec, "version"];
+        const result = yield* runner.run(command, { cwd, stdio: "capture" });
+        yield* requireSuccess(command, result);
+        const version = result.stdout.trim();
+
+        if (version === "") {
+            return yield* new WorkspaceError({
+                message: `bun pm view ${spec} version returned no version.`,
+            });
+        }
+
+        return version;
+    });
 
 /**
  * Resolves a dist-tag spec such as "alchemy@latest" to its published version.
  * A failed or empty `@next` lookup retries `@latest` for that package only, so
  * `@confect/*` packages keep resolving after their next tag disappears.
  */
-export async function resolveVersion(
-    runner: CommandRunner,
+export const resolveVersion = (
     cwd: string,
     spec: string,
-): Promise<string> {
-    try {
-        return await viewVersion(runner, cwd, spec);
-    } catch (error) {
-        if (!spec.endsWith("@next")) throw error;
-        return viewVersion(runner, cwd, `${spec.slice(0, -"@next".length)}@latest`);
-    }
-}
+): Effect.Effect<string, VersionError, Runner> =>
+    viewVersion(cwd, spec).pipe(
+        Effect.catch((error) =>
+            spec.endsWith("@next")
+                ? viewVersion(cwd, `${spec.slice(0, -"@next".length)}@latest`)
+                : Effect.fail(error),
+        ),
+    );
 
 /**
  * Resolves the effect version satisfying {@link EFFECT_MINIMUM}: latest once it
  * reaches the 4.x line, otherwise the rc tag alchemy and @confect/* peer on.
  */
-export async function resolveEffectVersion(runner: CommandRunner, cwd: string): Promise<string> {
-    const latest = await resolveVersion(runner, cwd, "effect@latest");
-    return Bun.semver.satisfies(latest, EFFECT_MINIMUM)
-        ? latest
-        : resolveVersion(runner, cwd, "effect@rc");
-}
+export const resolveEffectVersion = (cwd: string): Effect.Effect<string, VersionError, Runner> =>
+    Effect.flatMap(resolveVersion(cwd, "effect@latest"), (latest) =>
+        Bun.semver.satisfies(latest, EFFECT_MINIMUM)
+            ? Effect.succeed(latest)
+            : resolveVersion(cwd, "effect@rc"),
+    );
 
 /**
  * Catalog entries stay exact for prereleases (caret ranges skip them) and use a
  * caret otherwise.
  */
-export function catalogRange(version: string): string {
-    return version.includes("-") ? version : `^${version}`;
-}
+export const catalogRange = (version: string): string =>
+    version.includes("-") ? version : `^${version}`;

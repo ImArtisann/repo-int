@@ -2,12 +2,21 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtemp, mkdir, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import * as Schema from "effect/Schema";
 import { runCli } from "./cli.ts";
-import type { Logger } from "./configure.ts";
-import type { CommandRunner } from "./process.ts";
+import type { Logger } from "./log.ts";
+import type { CommandRunner } from "./runner.ts";
 
 const temporaryDirectories: string[] = [];
+
 const logger: Logger = { error() {}, log() {}, warn() {} };
+
+const parsePathFilters = Schema.decodeUnknownSync(
+    Schema.Struct({
+        reviews: Schema.Struct({ path_filters: Schema.Array(Schema.String) }),
+    }),
+);
+
 afterEach(async () => {
     await Promise.all(
         temporaryDirectories
@@ -15,29 +24,40 @@ afterEach(async () => {
             .map((directory) => rm(directory, { force: true, recursive: true })),
     );
 });
+
 async function temporaryDirectory(): Promise<string> {
     const directory = await mkdtemp(join(tmpdir(), "repo-int-cli-test-"));
     temporaryDirectories.push(directory);
+
     return directory;
 }
+
 function recordingRunner(calls: { command: readonly string[]; cwd: string }[] = []): CommandRunner {
     return async (command, options) => {
         calls.push({ command: [...command], cwd: options.cwd });
         let stdout = "";
+
         if (command[0] === "git") stdout = "true\n";
+
         if (command[0] === "gh") stdout = "owner-from-gh\n";
+
         if (command[1] === "pm") {
             if (!(await Bun.file(join(options.cwd, "package.json")).exists())) {
                 return { exitCode: 1, stdout: "", stderr: "No package.json was found" };
             }
+
             const spec = command[3] ?? "";
-            const versions: Record<string, string> = {
-                "alchemy@latest": "2.0.0-beta.76",
-                "effect@latest": "3.22.1",
-                "effect@rc": "4.0.0-rc.112",
-            };
-            stdout = versions[spec] ?? (spec.startsWith("@confect/") ? "10.0.0-next.21" : "1.2.3");
+
+            const versions = new Map([
+                ["alchemy@latest", "2.0.0-beta.76"],
+                ["effect@latest", "3.22.1"],
+                ["effect@rc", "4.0.0-rc.112"],
+            ]);
+
+            stdout =
+                versions.get(spec) ?? (spec.startsWith("@confect/") ? "10.0.0-next.21" : "1.2.3");
         }
+
         return { exitCode: 0, stdout, stderr: "" };
     };
 }
@@ -69,9 +89,11 @@ describe("template CLI", () => {
             'const OWNER = "acme"',
         );
         expect(await Bun.file(join(cwd, ".github/workflows/ci.yml")).exists()).toBeTrue();
-        const filters = Bun.YAML.parse(await Bun.file(join(cwd, ".coderabbit.yaml")).text()) as {
-            reviews: { path_filters: string[] };
-        };
+
+        const filters = parsePathFilters(
+            Bun.YAML.parse(await Bun.file(join(cwd, ".coderabbit.yaml")).text()),
+        );
+
         expect(filters.reviews.path_filters).toContain("!tools/oxlint/**");
     });
 
@@ -119,14 +141,18 @@ describe("template CLI", () => {
         expect(astro.dependencies.astro).toBe("catalog:");
         const pkg = await Bun.file(join(cwd, "package.json")).json();
         expect(pkg.catalog["@alchemy.run/frontend-frameworks"]).toBe(pkg.catalog.alchemy);
-        const filters = Bun.YAML.parse(await Bun.file(join(cwd, ".coderabbit.yaml")).text()) as {
-            reviews: { path_filters: string[] };
-        };
+
+        const filters = parsePathFilters(
+            Bun.YAML.parse(await Bun.file(join(cwd, ".coderabbit.yaml")).text()),
+        );
+
         expect(filters.reviews.path_filters).toContain("!apps/web/src/routeTree.gen.ts");
         expect(filters.reviews.path_filters).toContain("!apps/static/.astro/**");
+
         const buildIndex = calls.findIndex(
             ({ command }) => command[1] === "run" && command[2] === "build",
         );
+
         expect(buildIndex).toBeGreaterThan(
             calls.findIndex(({ command }) => command[1] === "install"),
         );
@@ -147,29 +173,35 @@ describe("template CLI", () => {
         expect(
             await Bun.file(join(cwd, "packages/backend/confect/tables/notes.ts")).exists(),
         ).toBeTrue();
+
         const confect = calls.findIndex(
             ({ command }) => command.includes("confect") && command.includes("codegen"),
         );
+
         const ai = calls.findIndex(({ command }) => command.includes("ai-files"));
         expect(confect).toBeGreaterThan(calls.findIndex(({ command }) => command[1] === "install"));
         expect(ai).toBeGreaterThan(confect);
         expect(calls[confect]?.cwd).toBe(join(cwd, "packages/backend"));
         const pkg = await Bun.file(join(cwd, "package.json")).json();
         expect(pkg.catalog["@confect/core"]).toBe("10.0.0-next.21");
-        const filters = Bun.YAML.parse(await Bun.file(join(cwd, ".coderabbit.yaml")).text()) as {
-            reviews: { path_filters: string[] };
-        };
+
+        const filters = parsePathFilters(
+            Bun.YAML.parse(await Bun.file(join(cwd, ".coderabbit.yaml")).text()),
+        );
+
         expect(filters.reviews.path_filters).toContain("!packages/backend/convex/**");
     });
 
     test("rerunning config preserves bytes and avoids catalog resolution", async () => {
         const cwd = await temporaryDirectory();
+
         const options = {
             args: ["config", "--yes", "--owner", "acme"],
             cwd,
             logger,
             runner: recordingRunner(),
         };
+
         expect(await runCli(options)).toBe(0);
         const before = await Bun.file(join(cwd, "package.json")).text();
         const calls: { command: readonly string[]; cwd: string }[] = [];
@@ -204,12 +236,14 @@ describe("template CLI", () => {
 
     test("all-template reruns preserve framework review exclusions without rewriting files", async () => {
         const cwd = await temporaryDirectory();
+
         const options = {
             args: ["config", "convex", "tanstack", "astro", "--owner", "acme", "--yes"],
             cwd,
             logger,
             runner: recordingRunner(),
         };
+
         expect(await runCli(options)).toBe(0);
         const before = await Bun.file(join(cwd, ".coderabbit.yaml")).text();
         const messages: string[] = [];
@@ -225,12 +259,14 @@ describe("template CLI", () => {
 
     test("Astro alone uses web and preserves edited scaffold files on rerun", async () => {
         const cwd = await temporaryDirectory();
+
         const options = {
             args: ["config", "astro", "--owner", "acme", "--yes"],
             cwd,
             logger,
             runner: recordingRunner(),
         };
+
         expect(await runCli(options)).toBe(0);
         expect((await Bun.file(join(cwd, "apps/web/package.json")).json()).dependencies.astro).toBe(
             "catalog:",
@@ -350,9 +386,11 @@ describe("template CLI", () => {
                 runner: recordingRunner(),
             }),
         ).toBe(0);
+
         const { DEFAULT_ASSETS_BUCKET_NAME: bucket } = await import(
             join(cwd, "packages/assets/src/config.ts")
         );
+
         expect(bucket).toHaveLength(63);
         expect(bucket).toMatch(/^[a-z0-9][a-z0-9-]*-assets$/);
         const { parseEnv } = await import("node:util");
@@ -423,11 +461,13 @@ describe("template CLI", () => {
     test("invalid or unrelated UI base flags fail before creating files or executing commands", async () => {
         const cwd = await temporaryDirectory();
         const calls: { command: readonly string[]; cwd: string }[] = [];
+
         const options = {
             cwd,
             logger,
             runner: recordingRunner(calls),
         };
+
         expect(await runCli({ ...options, args: ["ui", "--ui-base", "invalid"] })).toBe(1);
         expect(await runCli({ ...options, args: ["ui", "--ui-base"] })).toBe(1);
         expect(await runCli({ ...options, args: ["config", "--ui-base", "base"] })).toBe(1);
@@ -521,9 +561,11 @@ describe("template CLI", () => {
             calls.find(({ command }) => command[1] === "run" && command[2] === "build")?.cwd,
         ).toBe(join(cwd, "apps/marketing"));
         expect(messages).toContain("Next: bun run --cwd apps/marketing dev");
-        const filters = Bun.YAML.parse(await Bun.file(join(cwd, ".coderabbit.yaml")).text()) as {
-            reviews: { path_filters: string[] };
-        };
+
+        const filters = parsePathFilters(
+            Bun.YAML.parse(await Bun.file(join(cwd, ".coderabbit.yaml")).text()),
+        );
+
         expect(filters.reviews.path_filters).toContain("!apps/marketing/src/routeTree.gen.ts");
     });
 
@@ -549,6 +591,7 @@ describe("template CLI", () => {
                 logger: { ...logger, warn: (message) => warnings.push(message ?? "") },
                 prompt: async (question) => {
                     asked.push(question);
+
                     return answers.shift() ?? "";
                 },
                 runner: recordingRunner(),
@@ -575,11 +618,13 @@ describe("template CLI", () => {
         await mkdir(join(cwd, "apps/web"), { recursive: true });
         await Bun.write(join(cwd, "apps/web/keep.txt"), "user content");
         const errors: string[] = [];
+
         const failing = {
             cwd,
             logger: { ...logger, error: (message: string) => errors.push(message ?? "") },
             runner: recordingRunner(),
         };
+
         expect(await runCli({ ...failing, args: ["tanstack", "--yes"] })).toBe(1);
         expect(errors.at(-1)).toContain("pass --app-dir <name>");
         expect(
@@ -600,11 +645,13 @@ describe("template CLI", () => {
                 runner: recordingRunner(),
             }),
         ).toBe(0);
+
         const options = {
             cwd,
             logger,
             runner: recordingRunner(),
         };
+
         expect(await runCli({ ...options, args: ["tanstack", "--app-dir", "../escape"] })).toBe(1);
         expect(await runCli({ ...options, args: ["tanstack", "--app-dir", "apps/web"] })).toBe(1);
         expect(await runCli({ ...options, args: ["tanstack", "--app-dir", "--yes"] })).toBe(1);
@@ -646,5 +693,81 @@ describe("template CLI", () => {
         await Bun.write(workflow, "name: my deploy\n");
         expect(await runCli({ ...options, args: ["ui", "--yes"] })).toBe(0);
         expect(await Bun.file(workflow).text()).toBe("name: my deploy\n");
+    });
+
+    test("--xstate installs the XState lint rules and keeps them on rerun", async () => {
+        const cwd = await temporaryDirectory();
+        const options = { cwd, logger, runner: recordingRunner() };
+        expect(
+            await runCli({
+                ...options,
+                args: ["config", "--owner", "acme", "--xstate", "--yes"],
+            }),
+        ).toBe(0);
+
+        const xstateDir = join(cwd, "tools/oxlint/xstate");
+        expect((await readdir(xstateDir)).toSorted()).toEqual([
+            "index.ts",
+            "no-direct-xstate-create-machine.ts",
+            "no-direct-xstate-use-selector.ts",
+            "no-multiple-xstate-hooks.ts",
+            "no-single-use-xstate-actions.ts",
+            "no-single-use-xstate-guards.ts",
+            "require-xstate-event-satisfies.ts",
+            "xstate-single-use.ts",
+        ]);
+
+        const viteConfig = await Bun.file(join(cwd, "vite.config.ts")).text();
+        expect(viteConfig).toContain(
+            '{ name: "xstate", specifier: "./tools/oxlint/xstate/index.ts" }',
+        );
+        expect(viteConfig).toContain('"xstate/require-xstate-event-satisfies": "error"');
+        expect(viteConfig).not.toContain("repo-int:xstate");
+
+        // A rerun without the flag keeps the installed rules and lines.
+        const messages: string[] = [];
+        expect(
+            await runCli({
+                ...options,
+                args: ["config", "--owner", "acme", "--yes"],
+                logger: { ...logger, log: (message) => messages.push(message ?? "") },
+            }),
+        ).toBe(0);
+        expect(messages).toContain("[unchanged] vite.config.ts");
+        expect(await Bun.file(join(xstateDir, "index.ts")).exists()).toBeTrue();
+        expect(await Bun.file(join(cwd, "vite.config.ts")).text()).toContain(
+            '"xstate/require-xstate-event-satisfies": "error"',
+        );
+    });
+
+    test("config without --xstate writes no XState rules", async () => {
+        const cwd = await temporaryDirectory();
+        expect(
+            await runCli({
+                args: ["config", "--owner", "acme", "--yes"],
+                cwd,
+                logger,
+                runner: recordingRunner(),
+            }),
+        ).toBe(0);
+        expect(await Bun.file(join(cwd, "tools/oxlint/xstate/index.ts")).exists()).toBeFalse();
+        expect(await Bun.file(join(cwd, "vite.config.ts")).text()).not.toContain("xstate");
+    });
+
+    test("--xstate without config fails before any write or command", async () => {
+        const cwd = await temporaryDirectory();
+        const calls: { command: readonly string[]; cwd: string }[] = [];
+        const errors: string[] = [];
+        expect(
+            await runCli({
+                args: ["ui", "--xstate"],
+                cwd,
+                logger: { ...logger, error: (message) => errors.push(message ?? "") },
+                runner: recordingRunner(calls),
+            }),
+        ).toBe(1);
+        expect(errors.join("\n")).toContain("--xstate requires the config template.");
+        expect(await readdir(cwd)).toEqual([]);
+        expect(calls).toEqual([]);
     });
 });

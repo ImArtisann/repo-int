@@ -14,10 +14,15 @@
         "index.ts",
         "src/cli.ts",
         "src/configure.ts",
+        "src/errors.ts",
         "src/git.ts",
-        "src/process.ts",
+        "src/interaction.ts",
+        "src/log.ts",
+        "src/manifest.ts",
+        "src/runner.ts",
         "src/templates.ts",
         "src/versions.ts",
+        "src/workspace.ts",
         "templates"
     ],
     "type": "module",
@@ -27,25 +32,23 @@
         "registry": "https://registry.npmjs.org"
     },
     "scripts": {
-        "check": "bun run typecheck && bun run format:check && bun run lint && bun run test",
-        "typecheck": "tsc --noEmit",
-        "format": "oxfmt --write .",
-        "format:check": "oxfmt --check .",
-        "lint": "oxlint . --no-error-on-unmatched-pattern",
-        "lint:fix": "oxlint --fix . --no-error-on-unmatched-pattern",
-        "prepare": "bunx --bun husky",
+        "check": "vp check && tsc --noEmit",
         "test": "bun test ./src",
+        "prepare": "lefthook install && effect-tsgo patch --typescript --oxlint",
+        "deploy:github": "alchemy deploy stacks/github.ts",
         "publish:package": "bun publish"
     },
+    "dependencies": {
+        "effect": "4.0.0-rc.113",
+        "@effect/platform-bun": "4.0.0-rc.113"
+    },
     "devDependencies": {
-        "@effect/tsgo": "0.36.4",
-        "@oxlint/plugins": "1.77.0",
+        "@effect/tsgo": "0.41.0",
+        "@oxlint/plugins": "1.79.0",
         "@types/bun": "latest",
-        "husky": "^9.1.7",
-        "lint-staged": "^17.3.0",
-        "oxfmt": "^0.62.0",
-        "oxlint": "1.77.0",
-        "oxlint-tsgolint": "7.0.2001",
-        "typescript": "7.0.2"
+        "alchemy": "2.0.0-beta.77",
+        "lefthook": "^2.1.12",
+        "typescript": "7.0.2",
+        "vite-plus": "0.3.0"
     }
 }

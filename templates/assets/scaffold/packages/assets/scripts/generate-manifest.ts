@@ -23,6 +23,7 @@ const FOOTER = [
 ].join("\n");
 
 function quote(value: string): string {
+    // oxlint-disable-next-line effect/no-global-json -- codegen quoting, not runtime data
     return JSON.stringify(value);
 }
 
@@ -39,19 +40,25 @@ function manifestSource(assets: readonly CollectedAsset[]): string {
             "    },",
         ].join("\n"),
     );
+
     // An empty object stays on one line so the committed file is format-stable.
     const literal = entries.length === 0 ? "{}" : `{\n${entries.join("\n")}\n}`;
     const declaration = `export const ASSET_MANIFEST = ${literal} as const satisfies Readonly<Record<string, AssetEntry>>;`;
+
     return `${HEADER}\n${declaration}\n${FOOTER}`;
 }
 
 const assets = await collectAssets();
+
 const source = manifestSource(assets);
+
 if (process.argv.includes("--check")) {
     const file = Bun.file(OUTPUT);
+
     if (!(await file.exists()) || (await file.text()) !== source) {
         throw new Error("Asset manifest is stale; run `bun run generate` in packages/assets.");
     }
+
     console.log(`verified ${assets.length} asset(s)`);
 } else {
     await Bun.write(OUTPUT, source);
