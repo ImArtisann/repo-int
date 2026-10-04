@@ -13,7 +13,8 @@ const REPOSITORY = "__REPO_NAME__";
  * One-shot stack for https://github.com/__OWNER__/__REPO_NAME__: converges the
  * repository settings, mints a scoped Cloudflare deployment token, and stores it
  * as GitHub Actions secrets. Deploy with `bun run deploy:github` after
- * `alchemy login --profile admin`.
+ * `alchemy profile create admin` and
+ * `alchemy profile edit --profile admin --add cloudflare --add github`.
  */
 export default Alchemy.Stack(
     "__STACK_NAME__GitHub",

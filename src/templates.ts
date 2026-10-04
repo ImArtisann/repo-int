@@ -34,13 +34,10 @@ export interface TemplateContext {
     features: ReadonlySet<TemplateFeature>;
 }
 
-/**
- * npm spec markers: "effect" resolves through resolveEffectVersion and
- * "alchemy-peer" reuses the resolved alchemy version.
- */
+/** A catalog package and the `bun pm view` spec that resolves its version. */
 export interface CatalogSpec {
     package: string;
-    /** A `bun pm view` spec, or a sentinel: "effect" resolves via EFFECT_MINIMUM, "alchemy-peer" copies the resolved alchemy version. */
+    /** A dist-tag or semver-range spec, or "alchemy-peer" to copy the resolved alchemy version. */
     spec: string;
 }
 
@@ -66,7 +63,11 @@ const SHARED_SCAFFOLD_ROOT = `${TEMPLATES_ROOT}/shared/scaffold`;
 
 const ALCHEMY: CatalogSpec = { package: "alchemy", spec: "alchemy@latest" };
 
-const EFFECT: CatalogSpec = { package: "effect", spec: "effect" };
+/**
+ * alchemy and @confect/* require effect ^4.0.0; the range resolves the newest
+ * 4.x release even after `latest` moves to another major.
+ */
+const EFFECT: CatalogSpec = { package: "effect", spec: "effect@^4.0.0" };
 
 const TAILWIND: ReadonlyArray<CatalogSpec> = [
     { package: "@tailwindcss/vite", spec: "@tailwindcss/vite@latest" },
@@ -247,10 +248,10 @@ export const catalogSpecs = (
         ]),
         Match.when("convex", () => [
             { package: "convex", spec: "convex@latest" },
-            { package: "@confect/core", spec: "@confect/core@next" },
-            { package: "@confect/server", spec: "@confect/server@next" },
-            { package: "@confect/cli", spec: "@confect/cli@next" },
-            { package: "@confect/react", spec: "@confect/react@next" },
+            { package: "@confect/core", spec: "@confect/core@latest" },
+            { package: "@confect/server", spec: "@confect/server@latest" },
+            { package: "@confect/cli", spec: "@confect/cli@latest" },
+            { package: "@confect/react", spec: "@confect/react@latest" },
         ]),
         Match.when("ui", () => [
             { package: "react", spec: "react@latest" },

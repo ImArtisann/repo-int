@@ -39,16 +39,16 @@
         "publish:package": "bun publish"
     },
     "dependencies": {
-        "effect": "4.0.0-rc.113",
-        "@effect/platform-bun": "4.0.0-rc.113"
+        "effect": "4.0.0",
+        "@effect/platform-bun": "4.0.0"
     },
     "devDependencies": {
-        "@effect/tsgo": "0.41.0",
+        "@effect/tsgo": "0.48.0",
         "@oxlint/plugins": "1.79.0",
         "@types/bun": "latest",
-        "alchemy": "2.0.0-beta.77",
+        "alchemy": "2.0.0-beta.80",
         "lefthook": "^2.1.12",
         "typescript": "7.0.2",
-        "vite-plus": "0.3.0"
+        "vite-plus": "1.0.0"
     }
 }

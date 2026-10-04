@@ -5,7 +5,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import type { Path } from "effect/Path";
 import * as Terminal from "effect/Terminal";
-import { Prompt } from "effect/unstable/cli";
+import { Prompt } from "effect/cli";
 import { Log } from "./log.ts";
 
 interface InteractionInterface {

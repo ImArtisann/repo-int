@@ -134,7 +134,8 @@ Authenticate Alchemy separately before deploying the private, squash-only GitHub
 repository and its scoped Cloudflare deployment secrets:
 
 ```bash
-bun x alchemy login --profile admin
+bun x alchemy profile create admin
+bun x alchemy profile edit --profile admin --add cloudflare --add github
 bun run deploy:github
 ```
 
@@ -224,7 +225,7 @@ bun run --cwd packages/assets verify
 bun run --cwd packages/assets upload:plan
 
 # Authenticate and provision the bucket; this does not upload images.
-bun x alchemy login
+bun x alchemy profile edit --add cloudflare
 bun run --cwd packages/assets deploy
 
 # Set R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, and R2_SECRET_ACCESS_KEY

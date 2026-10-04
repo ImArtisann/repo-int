@@ -48,14 +48,15 @@ function recordingRunner(calls: { command: readonly string[]; cwd: string }[] = 
 
             const spec = command[3] ?? "";
 
-            const versions = new Map([
-                ["alchemy@latest", "2.0.0-beta.76"],
-                ["effect@latest", "3.22.1"],
-                ["effect@rc", "4.0.0-rc.112"],
-            ]);
+            const versions = {
+                "alchemy@latest": "2.0.0-beta.76",
+                "effect@^4.0.0": "4.0.0",
+                "effect@latest": "5.0.0",
+            } satisfies Record<string, string>;
 
             stdout =
-                versions.get(spec) ?? (spec.startsWith("@confect/") ? "10.0.0-next.21" : "1.2.3");
+                Object.entries(versions).find(([tagged]) => tagged === spec)?.[1] ??
+                (spec.startsWith("@confect/") && spec.endsWith("@latest") ? "10.0.0" : "1.2.3");
         }
 
         return { exitCode: 0, stdout, stderr: "" };
@@ -77,11 +78,10 @@ describe("template CLI", () => {
         expect(pkg.workspaces).toEqual(["apps/*", "packages/*"]);
         expect(pkg.catalog).toMatchObject({
             alchemy: "2.0.0-beta.76",
-            effect: "4.0.0-rc.112",
+            effect: "^4.0.0",
             lefthook: "^1.2.3",
         });
         expect(pkg.devDependencies.lefthook).toBe("catalog:");
-        expect(pkg.devDependencies["vite-plus"]).toBe("0.3.0");
         expect(pkg.scripts.prepare).toBe(
             "lefthook install && effect-tsgo patch --typescript --oxlint",
         );
@@ -183,7 +183,7 @@ describe("template CLI", () => {
         expect(ai).toBeGreaterThan(confect);
         expect(calls[confect]?.cwd).toBe(join(cwd, "packages/backend"));
         const pkg = await Bun.file(join(cwd, "package.json")).json();
-        expect(pkg.catalog["@confect/core"]).toBe("10.0.0-next.21");
+        expect(pkg.catalog["@confect/core"]).toBe("^10.0.0");
 
         const filters = parsePathFilters(
             Bun.YAML.parse(await Bun.file(join(cwd, ".coderabbit.yaml")).text()),

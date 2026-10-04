@@ -1,5 +1,5 @@
 # Copy this file to .env in packages/assets. Never commit .env.
-# Authenticate Alchemy with `bun x alchemy login` before deploying.
+# Authenticate Alchemy with `bun x alchemy profile edit --add cloudflare` before deploying.
 ASSETS_BUCKET_NAME=__ASSETS_BUCKET_NAME__
 ASSETS_HOST=
 ASSETS_ZONE_ID=

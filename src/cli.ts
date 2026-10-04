@@ -9,7 +9,7 @@ import { Path } from "effect/Path";
 import type { PlatformError } from "effect/PlatformError";
 import * as Runtime from "effect/Runtime";
 import * as Terminal from "effect/Terminal";
-import { Argument, CliError, Command, Flag } from "effect/unstable/cli";
+import { Argument, CliError, Command, Flag } from "effect/cli";
 import { BunServices } from "@effect/platform-bun";
 import packageJson from "../package.json" with { type: "json" };
 import {
@@ -52,7 +52,7 @@ import {
     type UiBase,
     resolveTemplate,
 } from "./templates.ts";
-import { catalogRange, resolveEffectVersion, resolveVersion } from "./versions.ts";
+import { catalogRange, resolveVersion } from "./versions.ts";
 import {
     checkUiAppCompatibility,
     existingCatalog,
@@ -315,10 +315,7 @@ const program = (input: {
             specs,
             ([name, spec]) =>
                 Effect.gen(function* () {
-                    const resolved = yield* Match.value(spec).pipe(
-                        Match.when("effect", () => resolveEffectVersion(cwd)),
-                        Match.orElse(() => resolveVersion(cwd, spec)),
-                    );
+                    const resolved = yield* resolveVersion(cwd, spec);
 
                     versions[name] = catalogRange(resolved);
                 }).pipe(
@@ -432,7 +429,10 @@ const program = (input: {
         );
 
         const nextSteps: ReadonlyArray<readonly [TemplateName, string]> = [
-            ["config", "Next: alchemy login --profile admin, then bun run deploy:github"],
+            [
+                "config",
+                "Next: alchemy profile create admin, alchemy profile edit --profile admin --add cloudflare --add github, then bun run deploy:github",
+            ],
             ["convex", "Next: bun run --cwd packages/backend dev:convex to link a deployment"],
             ["tanstack", `Next: bun run --cwd apps/${tanstackDir} dev`],
             ["astro", `Next: bun run --cwd apps/${astroDir} dev`],

@@ -1,4 +1,4 @@
-import { recommended } from "@effect/tsgo/oxlint-presets";
+import { effectNative, recommended } from "@effect/tsgo/oxlint-presets";
 import { defineConfig } from "vite-plus";
 
 const ignorePatterns = [
@@ -28,7 +28,7 @@ export default defineConfig({
     run: { cache: true },
     test: { passWithNoTests: true },
     lint: {
-        extends: [recommended],
+        extends: [recommended, effectNative],
         options: { typeAware: true, typeCheck: true },
         jsPlugins: [
             { name: "anti-slop", specifier: "./tools/oxlint/anti-slop/index.ts" },

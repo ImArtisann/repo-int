@@ -1,4 +1,4 @@
-import { recommended } from "@effect/tsgo/oxlint-presets";
+import { effectNative, recommended } from "@effect/tsgo/oxlint-presets";
 import { defineConfig } from "vite-plus";
 
 const ignorePatterns = [
@@ -12,7 +12,7 @@ const ignorePatterns = [
 export default defineConfig({
     run: { cache: true },
     lint: {
-        extends: [recommended],
+        extends: [recommended, effectNative],
         options: { typeAware: true, typeCheck: true },
         jsPlugins: [
             {
